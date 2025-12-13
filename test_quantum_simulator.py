@@ -5,6 +5,12 @@ from quantum_simulator import *
 
 class TestQuantumSimulator(unittest.TestCase):
 
+    def assert_tensors_close(self, actual, expected):
+        try:
+            torch.testing.assert_close(actual, expected)
+        except AssertionError as e:
+            self.fail(f"\nExpected: {expected}\nReceived: {actual}\nOriginal error: {e}")
+
     def test_zero_state(self):
         state = zero_state(1)
         self.assertEqual(state[0], torch.complex(torch.tensor(1.0), torch.tensor(0.0)))
@@ -24,45 +30,48 @@ class TestQuantumSimulator(unittest.TestCase):
         state = zero_state(1)
         new_state = apply_gate(state, I2, [0], 1)
         expected = torch.tensor([1, 0], dtype=torch.cfloat)
-        torch.testing.assert_close(new_state, expected)
+        self.assert_tensors_close(new_state, expected)
 
     def test_X_gate(self):
         state = zero_state(1)
         new_state = apply_gate(state, X, [0], 1)
         expected = torch.tensor([0, 1], dtype=torch.cfloat)
-        torch.testing.assert_close(new_state, expected)
+        self.assert_tensors_close(new_state, expected)
 
     # y gate application must be wrong
     def test_Y_gate(self):
         state = zero_state(1);  # |0>,
         new_state = apply_gate(state, Y, [0], 1) # Y|0> = i|1>
         expected = torch.tensor([0, 1j], dtype=torch.cfloat)
-        torch.testing.assert_close(new_state, expected)
+        self.assert_tensors_close(new_state, expected)
         
         state = zero_state(1); state[0] = 0; state[1] = 1;  # |1>,
         new_state = apply_gate(state, Y, [0], 1) # Y|1> = -i|0>
         expected = torch.tensor([-1j, 0], dtype=torch.cfloat)
-        torch.testing.assert_close(new_state, expected)
+        self.assert_tensors_close(new_state, expected)
 
     def test_Z_gate(self):
         state = zero_state(1)
         state[0] = 0;state[1] = 1  # |1>
         new_state = apply_gate(state, Z, [0], 1)
         expected = torch.tensor([0, -1], dtype=torch.cfloat)
-        torch.testing.assert_close(new_state, expected)
+        self.assert_tensors_close(new_state, expected)
 
     def test_H_gate(self):
         state = zero_state(1) # |0>
         new_state = apply_gate(state, H, [0], 1)
         expected = torch.tensor([1/math.sqrt(2), 1/math.sqrt(2)], dtype=torch.cfloat)
-        torch.testing.assert_close(new_state, expected)
+        self.assert_tensors_close(new_state, expected)
 
     def test_S_gate(self):
         state = zero_state(1)
         state[0] = 0;state[1] = 1  # |1>
         new_state = apply_gate(state, S, [0], 1)
         expected = torch.tensor([0, 1j], dtype=torch.cfloat)
-        torch.testing.assert_close(new_state, expected)
+        try:
+            torch.testing.assert_close(new_state, expected)
+        except AssertionError as e:
+            self.fail(f"Expected: {expected}\nReceived: {new_state}\nOriginal error: {e}")
 
     def test_T_gate(self):
         state = zero_state(1)
@@ -70,7 +79,7 @@ class TestQuantumSimulator(unittest.TestCase):
         new_state = apply_gate(state, T, [0], 1)
         phase = torch.exp(torch.complex(torch.tensor(0.0), torch.tensor(math.pi/4)))
         expected = torch.tensor([0, phase], dtype=torch.cfloat)
-        torch.testing.assert_close(new_state, expected)
+        self.assert_tensors_close(new_state, expected)
 
     def test_RX_gate(self):
         theta = math.pi
@@ -78,7 +87,7 @@ class TestQuantumSimulator(unittest.TestCase):
         state = zero_state(1)
         new_state = apply_gate(state, gate, [0], 1)
         expected = torch.tensor([0, -1j], dtype=torch.cfloat)  # RX(pi) |0> = -i |1>
-        torch.testing.assert_close(new_state, expected)
+        self.assert_tensors_close(new_state, expected)
 
     def test_RY_gate(self):
         theta = math.pi
@@ -86,7 +95,7 @@ class TestQuantumSimulator(unittest.TestCase):
         state = zero_state(1)
         new_state = apply_gate(state, gate, [0], 1)
         expected = torch.tensor([0, 1], dtype=torch.cfloat)  # RY(pi) |0> = |1>
-        torch.testing.assert_close(new_state, expected)
+        self.assert_tensors_close(new_state, expected)
 
     def test_RZ_gate(self):
         theta = math.pi
@@ -95,7 +104,7 @@ class TestQuantumSimulator(unittest.TestCase):
         state[0] = 0;state[1] = 1  # |1>
         new_state = apply_gate(state, gate, [0], 1)
         expected = torch.tensor([0, -1j], dtype=torch.cfloat)  # RZ(pi) |1> = -i |1>
-        torch.testing.assert_close(new_state, expected)
+        self.assert_tensors_close(new_state, expected)
 
     def test_CNOT_gate(self):
         state = zero_state(2)
@@ -103,15 +112,7 @@ class TestQuantumSimulator(unittest.TestCase):
         new_state = apply_gate(state, CNOT, [0, 1], 2)
         expected = torch.zeros(4, dtype=torch.cfloat)
         expected[3] = 1  # |11>
-        torch.testing.assert_close(new_state, expected)
-
-    def test_SWAP_gate(self):
-        state = zero_state(2)
-        state[0] = 0; state[1] = 1  # |01>
-        new_state = apply_gate(state, SWAP, [0, 1], 2)
-        expected = torch.zeros(4, dtype=torch.cfloat)
-        expected[2] = 1  # |10>
-        torch.testing.assert_close(new_state, expected)
+        self.assert_tensors_close(new_state, expected)
 
     def test_three_CNOTs_simulate_SWAP(self):
         state = zero_state(2)
@@ -122,7 +123,7 @@ class TestQuantumSimulator(unittest.TestCase):
         state = apply_gate(state, CNOT, [0, 1], 2)
         expected = torch.zeros(4, dtype=torch.cfloat)
         expected[2] = 1  # |10>
-        torch.testing.assert_close(state, expected)
+        self.assert_tensors_close(state, expected)
 
     def test_SWAP_with_three_CNOTs(self):
         state = zero_state(2)
@@ -133,7 +134,7 @@ class TestQuantumSimulator(unittest.TestCase):
         cnot_state = apply_gate(state, CNOT, [0, 1], 2)
         cnot_state = apply_gate(cnot_state, CNOT, [1, 0], 2)
         cnot_state = apply_gate(cnot_state, CNOT, [0, 1], 2)
-        torch.testing.assert_close(swapped_state, cnot_state)
+        self.assert_tensors_close(swapped_state, cnot_state)
 
     def test_X_Y_Z_commute(self):
         state = random_state(1)
@@ -141,17 +142,17 @@ class TestQuantumSimulator(unittest.TestCase):
         xy = apply_gate(apply_gate(state, X, [0], 1), Y, [0], 1)
         # Y then X
         yx = apply_gate(apply_gate(state, Y, [0], 1), X, [0], 1)
-        torch.testing.assert_close(xy, yx)
+        self.assert_tensors_close(xy, yx)
 
         # X then Z
         xz = apply_gate(apply_gate(state, X, [0], 1), Z, [0], 1)
         zx = apply_gate(apply_gate(state, Z, [0], 1), X, [0], 1)
-        torch.testing.assert_close(xz, zx)
+        self.assert_tensors_close(xz, zx)
 
         # Y then Z
         yz = apply_gate(apply_gate(state, Y, [0], 1), Z, [0], 1)
         zy = apply_gate(apply_gate(state, Z, [0], 1), Y, [0], 1)
-        torch.testing.assert_close(yz, zy)
+        self.assert_tensors_close(yz, zy)
 
     def test_reversible_circuit(self):
         state = random_state(2)
@@ -161,7 +162,7 @@ class TestQuantumSimulator(unittest.TestCase):
         # Reverse: CNOT 0->1, H on 0
         reversed = apply_gate(after, CNOT, [0, 1], 2)
         reversed = apply_gate(reversed, H, [0], 2)
-        torch.testing.assert_close(state, reversed, atol=1e-6)
+        self.assert_tensors_close(state, reversed, atol=1e-6)
 
     def test_measure(self):
         state = zero_state(1)
@@ -185,9 +186,7 @@ class TestQuantumSimulator(unittest.TestCase):
         state = apply_gate(state, Y, [1], 3)
         expected = torch.zeros(8, dtype=torch.cfloat)
         expected[3] = 1j  # |011> with phase
-        torch.testing.assert_close(state, expected)
+        self.assert_tensors_close(state, expected, atol=1e-6)
 
 if __name__ == '__main__':
     unittest.main()
-#     </content>
-# <parameter name="filePath">/Users/zickers/Library/Mobile Documents/com~apple~CloudDocs/Classwork/CS648/COMPSCI648-Project/test_quantum_simulator.py
