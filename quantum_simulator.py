@@ -48,12 +48,15 @@ I2 = torch.eye(2, dtype=torch.cfloat)
 # Parameterized rotations
 # ───────────────────────────────────────────────────────────────
 def RX(theta):
+    theta = torch.tensor(theta)  # Need to convert the scalars to tensor types
     return torch.cos(theta/2)*I2 - 1j*torch.sin(theta/2)*X
 
 def RY(theta):
+    theta = torch.tensor(theta)
     return torch.cos(theta/2)*I2 - 1j*torch.sin(theta/2)*Y
 
 def RZ(theta):
+    theta = torch.tensor(theta)
     return torch.cos(theta/2)*I2 - 1j*torch.sin(theta/2)*Z
 
 # ───────────────────────────────────────────────────────────────
@@ -63,6 +66,13 @@ CNOT = torch.tensor([[1,0,0,0],
                      [0,1,0,0],
                      [0,0,0,1],
                      [0,0,1,0]], dtype=torch.cfloat)
+
+# For testing "NOTC" -> controlled not with first qubit as target and second as control 
+NOTC = torch.tensor([[1,0,0,0],
+                     [0,0,0,1],
+                     [0,0,1,0],
+                     [0,1,0,0]], dtype=torch.cfloat)
+
 
 SWAP = torch.tensor([[1,0,0,0],
                      [0,0,1,0],
@@ -89,16 +99,26 @@ def apply_gate(state: torch.Tensor, gate: torch.Tensor, targets: list, num_qubit
 
     # calculate the axes for tensordot: contract gate input indices with state tensor indices
     state_axes = targets
-    gate_axes = list(range(k))
+    # Select the input axes of the reshaped gate tensor (last k axes) to contract with state,
+    # ensuring correct matrix-vector multiplication: gate @ state
+    gate_axes = list(range(k, 2*k))  
 
     # tensordot: gate contracts with selected axes of state_tensor
     result = torch.tensordot(gate_tensor, state_tensor, dims=(gate_axes, state_axes))
 
     # After contraction, the result has indices: (output indices) + (remaining state indices)
     # We need to permute so that output indices go back into proper qubit positions
-    # build permutation list
+    # Fix: Build permutation to correctly place output axes at target qubit positions
     remaining = [i for i in range(num_qubits) if i not in targets]
-    new_order = list(range(k)) + [k + i for i in range(len(remaining))]
+
+    new_order = []
+    for i in range(num_qubits):
+        if i in targets:
+            idx = targets.index(i)
+            new_order.append(idx)
+        else:
+            idx = remaining.index(i)
+            new_order.append(k + idx)
 
     result = result.permute(new_order)
 
