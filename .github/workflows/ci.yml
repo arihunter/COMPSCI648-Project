@@ -16,7 +16,7 @@ jobs:
 
     - name: Install dependencies
       run: |
-        pip install torch
+        pip install torch matplotlib
 
     - name: Run tests
       run: |
