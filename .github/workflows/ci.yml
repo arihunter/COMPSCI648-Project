@@ -21,4 +21,12 @@ jobs:
     - name: Run tests
       run: |
         python -m unittest test_quantum_simulator.py && python -m unittest test_qnn_layers.py
+      
+    - name: Run qnn_training
+      run: |
+        python quantum_simulator.py 
+         
+    - name: Run qnn_training-parallel
+      run: |
+        python quantum_simulator_parallel.py 
 
