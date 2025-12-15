@@ -16,8 +16,9 @@ jobs:
 
     - name: Install dependencies
       run: |
-        pip install torch matplotlib
+        pip install torch matplotlib scikit-learn
 
     - name: Run tests
       run: |
-        python -m unittest test_quantum_simulator.py
+        python -m unittest test_quantum_simulator.py && python -m unittest test_qnn_layers.py
+

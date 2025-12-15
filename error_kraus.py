@@ -94,11 +94,9 @@ def op_time(name: str, gate_durations: Dict[str, float]) -> float:
     """
     return gate_durations.get(name, 0.0)
 
-def affected_qubits(op: Tuple[str, List[int]]) -> List[int]:
-    return op[1]
 
 def add_time_based_noise(
-    circuit: List[Tuple[str, List[int]]],
+    circuit: List[Tuple[str, List[int], float | None]],
     num_qubits: int,
     T1: float,
     T2: float,
@@ -124,15 +122,14 @@ def add_time_based_noise(
 
     # main loop over operations
     for op in circuit:
-        name, qubits = op
-
+        name = op[0]
+        acted_on_qubits = op[1]
         # skip adding noise between pure-noise ops
         if is_only_noise_op(name):
             noisy_circuit.append(op)
             continue
 
         time_to_elapse = op_time(name, gate_durations)
-        acted_on_qubits = affected_qubits(op)
 
         # If op acts on multiple qubits, bring them to the same time
         if len(acted_on_qubits) > 1:

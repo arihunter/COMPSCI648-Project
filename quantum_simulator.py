@@ -49,16 +49,16 @@ I2 = torch.eye(2, dtype=torch.cfloat)
 # ───────────────────────────────────────────────────────────────
 # Parameterized rotations
 # ───────────────────────────────────────────────────────────────
-def RX(theta):
-    theta = torch.tensor(theta)  # Need to convert the scalars to tensor types
+def RX(theta: float):
+    theta = theta if torch.is_tensor(theta) else torch.tensor(theta)
     return torch.cos(theta/2)*I2 - 1j*torch.sin(theta/2)*X
 
-def RY(theta):
-    theta = torch.tensor(theta)
+def RY(theta: float):
+    theta = theta if torch.is_tensor(theta) else torch.tensor(theta)
     return torch.cos(theta/2)*I2 - 1j*torch.sin(theta/2)*Y
 
-def RZ(theta):
-    theta = torch.tensor(theta)
+def RZ(theta: float):
+    theta = theta if torch.is_tensor(theta) else torch.tensor(theta)
     return torch.cos(theta/2)*I2 - 1j*torch.sin(theta/2)*Z
 
 # ───────────────────────────────────────────────────────────────
@@ -95,7 +95,15 @@ GATE_LIBRARY: Dict[str, torch.Tensor] = {
     "T": T,
     "CNOT": CNOT,
     "NOTC": NOTC,
-    "SWAP": SWAP,
+    "SWAP": SWAP
+}
+
+# PARAMETRIC_GATES: Dict[str, callable[[float], torch.Tensor]] = {
+# PARAMETRIC_GATES: Dict[str, Unknown, torch.Tensor] = {
+PARAMETRIC_GATES = {
+    "RZ": RZ,
+    "RY": RY, 
+    "RX": RX
 }
 
 # ───────────────────────────────────────────────────────────────
@@ -222,26 +230,32 @@ def build_full_unitary(
 
 def apply_named_gate_density(
     density: torch.Tensor,
-    op: Tuple[str, List[int]],
+    op: Tuple[str, List[int], float | None],
     num_qubits: int,
-    unitary_cache: Dict[Tuple[str, Tuple[int, ...]], torch.Tensor] | None = None,
+    unitary_cache: Dict[Tuple[str, Tuple[int, ...], float | None], torch.Tensor] | None = None,
 ) -> torch.Tensor:
     """
     op = (gate_name, [qubits])
 
     Uses kraus_operator with a single Kraus operator U_full (probability 1).
     Caches U_full per (gate_name, tuple(qubits)) if unitary_cache is provided.
+    
+    For parametric gates, use 
+    op = (gate_name, [qubits], param)
+    ie: ("RX", [0], .4)
     """
-    gate_name, qubits = op
+    gate_name = op[0]
+    qubits = op[1]
+    
+    # take care of parametric case (have to deal with the param value)
+    is_param = gate_name in PARAMETRIC_GATES
+    param = op[2] if is_param else None
+    key = (gate_name, tuple(qubits), param)
 
-    if gate_name not in GATE_LIBRARY:
-        raise ValueError(f"Unknown gate name '{gate_name}'")
-
-    key = (gate_name, tuple(qubits))
     if unitary_cache is not None and key in unitary_cache:
         U_full = unitary_cache[key]
     else:
-        gate = GATE_LIBRARY[gate_name]
+        gate = PARAMETRIC_GATES[gate_name](param) if is_param else GATE_LIBRARY[gate_name]
         U_full = build_full_unitary(gate, qubits, num_qubits)
         if unitary_cache is not None:
             unitary_cache[key] = U_full
@@ -335,7 +349,7 @@ def run_noisy_circuit_density(
         else:
             # Physical gate
             density = apply_named_gate_density(
-                density, (name, op[1]), num_qubits, unitary_cache
+                density, (name, op[1],  op[2] if name in PARAMETRIC_GATES else None), num_qubits, unitary_cache
             )
 
     return density
@@ -411,3 +425,33 @@ if __name__ == "__main__":
     plot_measurement_comparison(state_counts, kraus_counts,
                             title="Normal vs error Kraus measurement distributions")
   
+    # Rotation ops test
+    
+    # circuit = [
+    #     ("RX",   [0],.2),
+    #     ("CNOT",[0,1]),
+    # ]
+
+    # # simple uniform durations
+    # gate_durations ={
+    #     "H":    1,
+    #     "CNOT": 1,
+    #     "RX":   1
+    # }
+
+    # T1 = 10
+    # T2 = 20
+
+    # # compare normal to kraus result
+    # ρ_final_normal = run_noisy_circuit_density(
+    #     initial_state=init_state,
+    #     circuit=circuit,
+    #     num_qubits=n,
+    #     T1=0,
+    #     T2=0,
+    #     gate_durations=gate_durations,
+    # )
+    # normal_kraus_counts = measure_kraus(ρ_final_normal,shots=SHOTS)
+    # plot_measurement_comparison(state_counts, normal_kraus_counts,
+    #                         title="Normal vs Kraus measurement distributions")
+
