@@ -24,9 +24,9 @@ jobs:
       
     - name: Run qnn_training
       run: |
-        python quantum_simulator.py 
+        python qml_training.py
          
     - name: Run qnn_training-parallel
       run: |
-        python quantum_simulator_parallel.py 
+        python qml_training_parallel.py
 
