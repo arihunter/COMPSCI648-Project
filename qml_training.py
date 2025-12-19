@@ -2,10 +2,20 @@ from quantum_simulator import run_noisy_circuit_density
 import torch
 import math
 import random
+from enum import Enum
+
 DEBUG = False
+
+
+class EncodingType(Enum):
+    """Enumeration for quantum feature encoding types."""
+    ANGLE = "angle"
+    AMPLITUDE = "amplitude"
 from quantum_simulator import (
     zero_state,
+    custom_state,
     apply_gate,
+    apply_circuit_to_ket,
     RY,
     RZ,
     RX,
@@ -18,6 +28,8 @@ from quantum_simulator import (
     Z,
     I2
 )
+
+
 
 # sklearn only for data (this is standard + allowed)
 from sklearn.datasets import load_breast_cancer
@@ -127,16 +139,54 @@ def expectation_z(state, qubit, n):
         op = mat if op is None else torch.kron(op, mat)
     return torch.real(state.conj() @ (op @ state))
 
+"""
+Encoding methods - angle encoding, and amplitude encoding. Returns normalized ket vector state, and circuit
+
+x - input vector
+n - amount of qubits
+encoding - enum EncodingType
+
+Throws error if the encoding type is not known.
+Will return state and circ, if circ is nonempty - the state encoding method needs it to be applied to the state to be initialized. This allows for error models that apply noise during state preparation.
+
+EX:
+state, circuit = state_encoding(x, n, encoding=EncodingType.ANGLE)
+TO GET KET:
+state = apply_circuit_to_ket(state, circuit, n)
+
+TO USE DENSITY SIM WITH NOISE:
+density = state_to_density(state)
+density = run_noisy_circuit_density(density, circuit, n, T1, T2, gate_durations)
+"""
+def state_encoding(x, n, encoding=EncodingType.ANGLE):
+    
+    # Specify encoding type 
+    # custom_state(x) -> Creates arbitrary normalized amplitude state (ignores gate errors, just creats perfect state)
+    if encoding == EncodingType.ANGLE:
+        state = zero_state(n)
+    elif encoding == EncodingType.AMPLITUDE:
+        state = custom_state(x)
+    else:
+        raise Exception("Unknown encoding")
+    
+    circuit = []
+    # Angle encoding state, assuming x is mapped to [-π,π]
+    if encoding == EncodingType.ANGLE:
+        circuit = param_gate_layer("RY",x)
+
+    return state, circuit
+
 # ============================================================
-# Deep Variational QNN
+# Deep Variational QNN, no errors
 # ============================================================
-def deep_vqc_forward(x, theta, depth=3):
+def deep_vqc_forward(x, theta, depth=3, encoding=EncodingType.ANGLE):
     n = 2
-    state = zero_state(n)
-
-    state = apply_gate(state, RY(x[0]), [0], n)
-    state = apply_gate(state, RY(x[1]), [1], n)
-
+    
+    # Prep state with desired encoding method
+    state,circ = state_encoding(x,n,encoding)
+    state = apply_circuit_to_ket(state,circ,n)
+    
+    # Variational layers
     idx = 0
     for _ in range(depth):
         state = apply_gate(state, RY(theta[idx]), [0], n)
@@ -152,36 +202,48 @@ def deep_vqc_forward(x, theta, depth=3):
 # ============================================================
 
 # Helper function to build layer of RX/Y/Z on selected qubits
-def param_gate_layer(gate: str, x , qubits: tuple[int]):
+def param_gate_layer(gate: str, x, specify_qubits: tuple[int] | None = None):
     op_list = []
-    for qubit in qubits:
-        op_list.append((gate, [qubit], x[qubit]))
+    if specify_qubits == None:
+        # Apply gate to all qubits
+        n = len(x)
+        for qubit in range(n):
+            op_list.append((gate, [qubit], x[qubit]))
+    else:
+        # apply gate to specified qubits
+        for qubit in specify_qubits:
+            op_list.append((gate, [qubit], x[qubit]))
     return op_list
 
-def noisy_qnn_forward(x, theta,
-                        T1=100, 
-                        T2=200,
-                        gate_durations={
-                            "CNOT": 1,
-                            "RY"  :  1,
-                        }
-    ):
+"""
+Noisy-VQC forward pass (one layer), with T1/T2 noise model.
+"""
+def noisy_qnn_forward(x, theta, T1=100, T2=200,
+    gate_durations={ # needed for noise model
+        "CNOT": 1,
+        "RY"  :  1, 
+    },
+    encoding=EncodingType.ANGLE):
     
     n = 2
     
-    init_state = zero_state(n)
-    x_RY_layer = param_gate_layer("RY",x,[0,1])
-    theta_RY_layer = param_gate_layer("RY",theta,[0,1])
-    cnot_layer = [("CNOT", [0,1])]
-    all_gates = x_RY_layer + theta_RY_layer + cnot_layer
-    all_gates.append(("RZ", [0], theta[2]))
+    init_state, circ = state_encoding(x,n,encoding) # circ now has the first RY layer (if angle encoding)
+    
+    # First RY trainable layer
+    circ += param_gate_layer("RY",theta,[0,1]) 
+        
+    # CNOT layer (0 -> 1)
+    circ += [("CNOT", [0,1])]
+    
+    # Last trainable RZ on qubit 0
+    circ += [("RZ", [0], theta[2])]
     
     if DEBUG:
-        print(f"QNN layer gates:\n{all_gates}")
+        print(f"QNN layer gates:\n{circ}")
         
     density = run_noisy_circuit_density(
         initial_state=init_state,
-        circuit=all_gates,
+        circuit=circ,
         num_qubits = n,
         T1 = T1,
         T2 = T2,
@@ -195,34 +257,35 @@ def noisy_qnn_forward(x, theta,
 # ============================================================
 # Quantum Kernel Model
 # ============================================================
-def quantum_feature_map(x):
+def quantum_feature_map(x, encoding=EncodingType.ANGLE):
     n = 2
-    state = zero_state(n)
-    state = apply_gate(state, RY(x[0]), [0], n)
-    state = apply_gate(state, RY(x[1]), [1], n)
+    init_state,circ = state_encoding(x,2,encoding)
+    state = apply_circuit_to_ket(init_state,circ,n)
     state = apply_gate(state, CNOT, [0,1], n)
     return state
 
-def quantum_kernel(x1, x2):
-    ψ1 = quantum_feature_map(x1)
-    ψ2 = quantum_feature_map(x2)
+def quantum_kernel(x1, x2, encoding = EncodingType.ANGLE):
+    ψ1 = quantum_feature_map(x1, encoding)
+    ψ2 = quantum_feature_map(x2, encoding)
     return torch.abs(torch.dot(ψ1.conj(), ψ2))**2
 
-def kernel_predict(x, X_train, y_train):
-    vals = torch.tensor([quantum_kernel(x, xi) for xi in X_train])
+def kernel_predict(x, X_train, y_train, encoding = EncodingType.ANGLE):
+    vals = torch.tensor([quantum_kernel(x, xi, encoding) for xi in X_train])
     return torch.sign(torch.sum(vals * y_train))
 
 # ============================================================
 # Training
 # ============================================================
-def train(model_type="deep_vqc"):
+def train(model_type="deep_vqc",encoding=EncodingType.ANGLE):
     X_train, X_test, y_train, y_test = make_real_dataset()
     epochs = 25
     lr = 0.1
 
+    deep_vqc_depth = 3
+    
     if model_type == "kernel":
         scores = torch.tensor([
-            kernel_predict(x, X_train, y_train) for x in X_test
+            kernel_predict(x, X_train, y_train,encoding) for x in X_test
         ])
         metrics = compute_metrics(scores, y_test)
         print("KERNEL TEST METRICS:", metrics)
@@ -237,9 +300,9 @@ def train(model_type="deep_vqc"):
             xi, yi = X_train[i], y_train[i]
 
             pred = (
-                deep_vqc_forward(xi, theta)
+                deep_vqc_forward(xi, theta, deep_vqc_depth, encoding)
                 if model_type == "deep_vqc"
-                else noisy_qnn_forward(xi, theta)
+                else noisy_qnn_forward(xi, theta, encoding=encoding)
             )
             
             # Debug first sample of deep_vqc
@@ -253,14 +316,14 @@ def train(model_type="deep_vqc"):
                 tm[p] -= shift
 
                 fp = (
-                    deep_vqc_forward(xi, tp)
+                    deep_vqc_forward(xi, tp, deep_vqc_depth, encoding)
                     if model_type == "deep_vqc"
-                    else noisy_qnn_forward(xi, tp)
+                    else noisy_qnn_forward(xi, tp, encoding)
                 )
                 fm = (
-                    deep_vqc_forward(xi, tm)
+                    deep_vqc_forward(xi, tm, deep_vqc_depth, encoding)
                     if model_type == "deep_vqc"
-                    else noisy_qnn_forward(xi, tm)
+                    else noisy_qnn_forward(xi, tm, encoding)
                 )
                 
                 # Debug: check if outputs are changing
@@ -272,9 +335,9 @@ def train(model_type="deep_vqc"):
         theta -= lr * grads / len(X_train)
 
         scores_test = torch.tensor([
-            deep_vqc_forward(x, theta)
+            deep_vqc_forward(x, theta, deep_vqc_depth, encoding)
             if model_type == "deep_vqc"
-            else noisy_qnn_forward(x, theta)
+            else noisy_qnn_forward(x, theta, encoding)
             for x in X_test
         ])
 
@@ -299,11 +362,28 @@ def train(model_type="deep_vqc"):
 # Run
 # ============================================================
 if __name__ == "__main__":
-    print("\nTraining Deep Variational QNN (Real Dataset)")
-    train("deep_vqc")
+    # Test angle encoding
+    print("Training Deep Variational QNN (Angle Encoding, Real Dataset)")
+    train("deep_vqc",EncodingType.ANGLE)
+    print("\nTraining Noise-Aware QNN (Angle Encoding, Real Dataset)")
+    train("noise_aware",EncodingType.ANGLE)
+    print("\nTraining Quantum Kernel Model (Angle Encoding, Real Dataset)")
+    train("kernel",EncodingType.ANGLE)
+    
+    # Amplitude encoding tests (may be slow)
+    print("\nTraining Deep Variational QNN (Amplitude Encoding, Real Dataset)")
+    train("deep_vqc",EncodingType.AMPLITUDE)
+    print("\nTraining Noise-Aware QNN (Amplitude Encoding, Real Dataset)")
+    train("noise_aware",EncodingType.AMPLITUDE)
+    print("\nTraining Quantum Kernel Model (Amplitude Encoding, Real Dataset)")
+    train("kernel",EncodingType.AMPLITUDE)  
+    
+    
+    # print("\nTraining Deep Variational QNN (Real Dataset)")
+    # train("deep_vqc")
 
-    print("\nTraining Noise-Aware QNN (Real Dataset)")
-    train("noise_aware")
+    # print("\nTraining Noise-Aware QNN (Real Dataset)")
+    # train("noise_aware")
 
-    print("\nTraining Quantum Kernel Model (Real Dataset)")
-    train("kernel")
+    # print("\nTraining Quantum Kernel Model (Real Dataset)")
+    # train("kernel")
