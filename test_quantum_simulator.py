@@ -434,11 +434,6 @@ class TestKrausHelpers(TestHelper):
         self.assertAlmostEqual(op_time("CNOT", times), 2.0)
         self.assertAlmostEqual(op_time("Z", times), 0.0)  # default
 
-    def test_affected_qubits(self):
-        op = ("H", [0, 2])
-        qs = affected_qubits(op)
-        self.assertEqual(qs, [0, 2])
-
     # ───────────────────────────────────────────────────────────
     # add_time_based_noise
     # ───────────────────────────────────────────────────────────

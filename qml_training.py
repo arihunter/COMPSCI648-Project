@@ -1,18 +1,22 @@
+from quantum_simulator import run_noisy_circuit_density
 import torch
 import math
 import random
-
+DEBUG = False
 from quantum_simulator import (
     zero_state,
     apply_gate,
     RY,
     RZ,
+    RX,
     CNOT,
     state_to_density,
     build_full_unitary,
     kraus_operator,
     apply_named_gate_density,
     apply_T1T2_noise_op,
+    Z,
+    I2
 )
 
 # sklearn only for data (this is standard + allowed)
@@ -117,11 +121,9 @@ def compute_metrics(scores, y_true):
 # Quantum utilities
 # ============================================================
 def expectation_z(state, qubit, n):
-    Z = torch.tensor([[1, 0], [0, -1]], dtype=torch.cfloat)
-    I = torch.eye(2, dtype=torch.cfloat)
     op = None
     for q in range(n):
-        mat = Z if q == qubit else I
+        mat = Z if q == qubit else I2
         op = mat if op is None else torch.kron(op, mat)
     return torch.real(state.conj() @ (op @ state))
 
@@ -148,32 +150,45 @@ def deep_vqc_forward(x, theta, depth=3):
 # ============================================================
 # Noise-aware QNN (density matrix)
 # ============================================================
-def noisy_qnn_forward(x, theta, T1=100, T2=200):
+
+# Helper function to build layer of RX/Y/Z on selected qubits
+def param_gate_layer(gate: str, x , qubits: tuple[int]):
+    op_list = []
+    for qubit in qubits:
+        op_list.append((gate, [qubit], x[qubit]))
+    return op_list
+
+def noisy_qnn_forward(x, theta,
+                        T1=100, 
+                        T2=200,
+                        gate_durations={
+                            "CNOT": 1,
+                            "RY"  :  1,
+                        }
+    ):
+    
     n = 2
-    density = state_to_density(zero_state(n))
-
-    for gate in [
-        build_full_unitary(RY(x[0]), [0], n),
-        build_full_unitary(RY(x[1]), [1], n),
-        build_full_unitary(RY(theta[0]), [0], n),
-        build_full_unitary(RY(theta[1]), [1], n),
-    ]:
-        density = kraus_operator(density, [(gate, 1.0)])
-
-    density = apply_named_gate_density(density, ("CNOT", [0,1]), n)
-
-    U = build_full_unitary(RZ(theta[2]), [0], n)
-    density = kraus_operator(density, [(U, 1.0)])
-
-    density = apply_T1T2_noise_op(
-        density,
-        ("T1T2_NOISE", [0], T1, T2, 1),
-        n
+    
+    init_state = zero_state(n)
+    x_RY_layer = param_gate_layer("RY",x,[0,1])
+    theta_RY_layer = param_gate_layer("RY",theta,[0,1])
+    cnot_layer = [("CNOT", [0,1])]
+    all_gates = x_RY_layer + theta_RY_layer + cnot_layer
+    all_gates.append(("RZ", [0], theta[2]))
+    
+    if DEBUG:
+        print(f"QNN layer gates:\n{all_gates}")
+        
+    density = run_noisy_circuit_density(
+        initial_state=init_state,
+        circuit=all_gates,
+        num_qubits = n,
+        T1 = T1,
+        T2 = T2,
+        gate_durations = gate_durations
     )
-
-    Z = torch.tensor([[1, 0], [0, -1]], dtype=torch.cfloat)
-    I = torch.eye(2, dtype=torch.cfloat)
-    Z0 = torch.kron(Z, I)
+    
+    Z0 = torch.kron(Z, I2)
 
     return torch.real(torch.trace(Z0 @ density))
 
@@ -226,6 +241,10 @@ def train(model_type="deep_vqc"):
                 if model_type == "deep_vqc"
                 else noisy_qnn_forward(xi, theta)
             )
+            
+            # Debug first sample of deep_vqc
+            if model_type == "deep_vqc" and epoch == 0 and i == 0:
+                print(f"  Initial pred = {pred.item():.6f}, label = {yi.item():.1f}")
 
             for p in range(len(theta)):
                 shift = math.pi / 2
@@ -243,6 +262,10 @@ def train(model_type="deep_vqc"):
                     if model_type == "deep_vqc"
                     else noisy_qnn_forward(xi, tm)
                 )
+                
+                # Debug: check if outputs are changing
+                if model_type == "deep_vqc" and epoch == 0 and i == 0 and p == 0:
+                    print(f"  DEBUG: f+ = {fp.item():.6f}, f- = {fm.item():.6f}, diff = {(fp-fm).item():.6f}")
 
                 grads[p] += 0.5 * ((fp - yi)**2 - (fm - yi)**2)
 
@@ -256,6 +279,10 @@ def train(model_type="deep_vqc"):
         ])
 
         metrics = compute_metrics(scores_test, y_test)
+        
+        # Debug metrics
+        grad_norm = torch.norm(grads).item()
+        param_norm = torch.norm(theta).item()
 
         print(
             f"{model_type.upper()} | Epoch {epoch:02d} | "
@@ -263,7 +290,9 @@ def train(model_type="deep_vqc"):
             f"Prec {metrics['precision']:.3f} | "
             f"Rec {metrics['recall']:.3f} | "
             f"F1 {metrics['f1']:.3f} | "
-            f"AUC {metrics['roc_auc']:.3f}"
+            f"AUC {metrics['roc_auc']:.3f} | "
+            f"GradNorm {grad_norm:.6f} | "
+            f"ParamNorm {param_norm:.6f}"
         )
 
 # ============================================================
