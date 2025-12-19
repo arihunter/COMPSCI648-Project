@@ -40,7 +40,7 @@ from sklearn.model_selection import train_test_split
 # ============================================================
 # Dataset (REAL-WORLD)
 # ============================================================
-def make_real_dataset(test_size=0.3, seed=42):
+def make_real_dataset(test_size=0.3, seed=42, encoding=EncodingType.ANGLE):
     data = load_breast_cancer()
     X = data.data
     y = data.target
@@ -51,11 +51,15 @@ def make_real_dataset(test_size=0.3, seed=42):
     # normalize
     X = StandardScaler().fit_transform(X)
 
-    # reduce to 2 features → 2 qubits
-    X = PCA(n_components=2).fit_transform(X)
+    # For angle encoding: n features → n qubits (use 2 features for 2 qubits)
+    # For amplitude encoding: 2^n amplitudes needed for n qubits (use 4 features for 2 qubits)
+    n_components = 4 if encoding == EncodingType.AMPLITUDE else 2
+    X = PCA(n_components=n_components).fit_transform(X)
 
-    # scale to [-π, π] for angle encoding
-    X = math.pi * X / X.max(axis=0)
+    # scale to [-π, π] for angle encoding (or normalized range for amplitude)
+    
+    if encoding == EncodingType.ANGLE:
+        X = math.pi * X / X.max(axis=0)
 
     X_train, X_test, y_train, y_test = train_test_split(
         X, y,
@@ -159,13 +163,27 @@ density = state_to_density(state)
 density = run_noisy_circuit_density(density, circuit, n, T1, T2, gate_durations)
 """
 def state_encoding(x, n, encoding=EncodingType.ANGLE):
-    
     # Specify encoding type 
     # custom_state(x) -> Creates arbitrary normalized amplitude state (ignores gate errors, just creats perfect state)
     if encoding == EncodingType.ANGLE:
+        assert len(x) == n, "Input dimension must match number of qubits for angle encoding"
         state = zero_state(n)
     elif encoding == EncodingType.AMPLITUDE:
-        state = custom_state(x)
+        # For amplitude encoding, we need 2^n amplitudes
+        # Pad the input if necessary
+        required_size = 2 ** n
+        if len(x) < required_size:
+            print("Warning: Input size less than required for amplitude encoding, padding with zeros.")
+            # Pad with zeros to match required size
+            padded_x = torch.zeros(required_size)
+            if isinstance(x, torch.Tensor):
+                padded_x[:len(x)] = x.clone().detach()
+            else:
+                padded_x[:len(x)] = torch.tensor(x)
+            state = custom_state(padded_x)
+        else:
+            # Use first 2^n elements if input is larger
+            state = custom_state(x[:required_size])
     else:
         raise Exception("Unknown encoding")
     
@@ -179,8 +197,10 @@ def state_encoding(x, n, encoding=EncodingType.ANGLE):
 # ============================================================
 # Deep Variational QNN, no errors
 # ============================================================
-def deep_vqc_forward(x, theta, depth=3, encoding=EncodingType.ANGLE):
-    n = 2
+def deep_vqc_forward(x, theta, depth=3, encoding=EncodingType.ANGLE, n=None):
+    # Calculate number of qubits based on encoding type
+    if n is None:
+        n = len(x) if encoding == EncodingType.ANGLE else int(math.log2(len(x)))
     
     # Prep state with desired encoding method
     state,circ = state_encoding(x,n,encoding)
@@ -225,7 +245,8 @@ def noisy_qnn_forward(x, theta, T1=100, T2=200,
     },
     encoding=EncodingType.ANGLE):
     
-    n = 2
+    # Calculate number of qubits based on encoding type
+    n = len(x) if encoding == EncodingType.ANGLE else int(math.log2(len(x)))
     
     init_state, circ = state_encoding(x,n,encoding) # circ now has the first RY layer (if angle encoding)
     
@@ -258,8 +279,9 @@ def noisy_qnn_forward(x, theta, T1=100, T2=200,
 # Quantum Kernel Model
 # ============================================================
 def quantum_feature_map(x, encoding=EncodingType.ANGLE):
-    n = 2
-    init_state,circ = state_encoding(x,2,encoding)
+    # Calculate number of qubits based on encoding type
+    n = len(x) if encoding == EncodingType.ANGLE else int(math.log2(len(x)))
+    init_state,circ = state_encoding(x,n,encoding)
     state = apply_circuit_to_ket(init_state,circ,n)
     state = apply_gate(state, CNOT, [0,1], n)
     return state
@@ -276,12 +298,11 @@ def kernel_predict(x, X_train, y_train, encoding = EncodingType.ANGLE):
 # ============================================================
 # Training
 # ============================================================
-def train(model_type="deep_vqc",encoding=EncodingType.ANGLE):
-    X_train, X_test, y_train, y_test = make_real_dataset()
-    epochs = 25
+def train(model_type="deep_vqc",encoding=EncodingType.ANGLE,epochs = 25):
+    X_train, X_test, y_train, y_test = make_real_dataset(encoding=encoding)
     lr = 0.1
 
-    deep_vqc_depth = 3
+    deep_vqc_depth = 3 # layers of VQC
     
     if model_type == "kernel":
         scores = torch.tensor([
@@ -318,12 +339,12 @@ def train(model_type="deep_vqc",encoding=EncodingType.ANGLE):
                 fp = (
                     deep_vqc_forward(xi, tp, deep_vqc_depth, encoding)
                     if model_type == "deep_vqc"
-                    else noisy_qnn_forward(xi, tp, encoding)
+                    else noisy_qnn_forward(xi, tp, encoding=encoding)
                 )
                 fm = (
                     deep_vqc_forward(xi, tm, deep_vqc_depth, encoding)
                     if model_type == "deep_vqc"
-                    else noisy_qnn_forward(xi, tm, encoding)
+                    else noisy_qnn_forward(xi, tm, encoding=encoding)
                 )
                 
                 # Debug: check if outputs are changing
@@ -337,7 +358,7 @@ def train(model_type="deep_vqc",encoding=EncodingType.ANGLE):
         scores_test = torch.tensor([
             deep_vqc_forward(x, theta, deep_vqc_depth, encoding)
             if model_type == "deep_vqc"
-            else noisy_qnn_forward(x, theta, encoding)
+            else noisy_qnn_forward(x, theta, encoding=encoding)
             for x in X_test
         ])
 

@@ -8,6 +8,7 @@ from qml_training import (
     quantum_kernel,
     kernel_predict,
     EncodingType,
+    train,
 )
 
 
@@ -53,6 +54,40 @@ class TestSequentialQMLRun(unittest.TestCase):
         pred = kernel_predict(x, self.X_train, self.y_train, encoding=EncodingType.ANGLE)
         self.assertTrue(torch.is_tensor(pred))
         self.assertEqual(pred.numel(), 1)
+
+
+class TestAllConfigurationsTraining(unittest.TestCase):
+    """Test training with 2 epochs for all configurations."""
+    
+    def test_deep_vqc_angle_encoding(self):
+        """Test Deep VQC with Angle Encoding."""
+        print("\n=== Testing Deep VQC with Angle Encoding (2 epochs) ===")
+        train(model_type="deep_vqc", encoding=EncodingType.ANGLE, epochs=2)
+    
+    def test_noise_aware_angle_encoding(self):
+        """Test Noise-Aware QNN with Angle Encoding."""
+        print("\n=== Testing Noise-Aware QNN with Angle Encoding (2 epochs) ===")
+        train(model_type="noise_aware", encoding=EncodingType.ANGLE, epochs=2)
+    
+    def test_kernel_angle_encoding(self):
+        """Test Quantum Kernel with Angle Encoding."""
+        print("\n=== Testing Quantum Kernel with Angle Encoding (2 epochs) ===")
+        train(model_type="kernel", encoding=EncodingType.ANGLE, epochs=2)
+    
+    def test_deep_vqc_amplitude_encoding(self):
+        """Test Deep VQC with Amplitude Encoding."""
+        print("\n=== Testing Deep VQC with Amplitude Encoding (2 epochs) ===")
+        train(model_type="deep_vqc", encoding=EncodingType.AMPLITUDE, epochs=2)
+    
+    def test_noise_aware_amplitude_encoding(self):
+        """Test Noise-Aware QNN with Amplitude Encoding."""
+        print("\n=== Testing Noise-Aware QNN with Amplitude Encoding (2 epochs) ===")
+        train(model_type="noise_aware", encoding=EncodingType.AMPLITUDE, epochs=2)
+    
+    def test_kernel_amplitude_encoding(self):
+        """Test Quantum Kernel with Amplitude Encoding."""
+        print("\n=== Testing Quantum Kernel with Amplitude Encoding (2 epochs) ===")
+        train(model_type="kernel", encoding=EncodingType.AMPLITUDE, epochs=2)
 
 
 if __name__ == "__main__":

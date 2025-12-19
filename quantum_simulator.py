@@ -19,7 +19,10 @@ def random_state(num_qubits: int):
     return state / torch.linalg.norm(state)
 
 def custom_state(amplitudes):
-    state = torch.tensor(amplitudes, dtype=torch.cfloat)
+    if isinstance(amplitudes, torch.Tensor):
+        state = amplitudes.to(dtype=torch.cfloat).clone().detach()
+    else:
+        state = torch.tensor(amplitudes, dtype=torch.cfloat)
     return state / torch.linalg.norm(state)
 
 # ───────────────────────────────────────────────────────────────
