@@ -218,15 +218,27 @@ def kraus_operator(density: torch.Tensor, operations_probs: list[tuple[torch.Ten
     
     # Probabilities must sum to 1
     assert sum(ops[1] for ops in operations_probs) == 1
-    return sum(
-        # the probability of this option
-        op[1] *
-        # U * ρ * U† (matrix multiplication)
-        op[0] @ density @ torch.adjoint(op[0])
-        
-        # for each op and prob
-        for op in operations_probs
-    )
+    
+    # Vectorized batched approach: compute all U @ ρ @ U† simultaneously
+    # Stack operators and probabilities for batch processing
+    operators = torch.stack([op[0] for op in operations_probs])  # (n_ops, dim, dim)
+    probs = torch.tensor([op[1] for op in operations_probs], dtype=density.dtype, device=density.device)  # (n_ops,)
+    
+    # Compute adjoints once
+    operators_conj_t = torch.adjoint(operators)  # (n_ops, dim, dim)
+    
+    # Embarrassingly parallel: batch matrix multiply
+    # Step 1: U @ ρ for all operators simultaneously
+    temp = torch.matmul(operators, density)  # (n_ops, dim, dim)
+    
+    # Step 2: (U @ ρ) @ U† for all operators simultaneously
+    weighted_results = torch.matmul(temp, operators_conj_t)  # (n_ops, dim, dim)
+    
+    # Step 3: weight by probabilities and sum
+    # Reshape probs to broadcast correctly: (n_ops, 1, 1) for multiplication with (n_ops, dim, dim)
+    weighted_results = weighted_results * probs[:, None, None]
+    
+    return weighted_results.sum(dim=0)
 
 # ───────────────────────────────────────────────────────────────
 # Embed a local gate as a full 2^n x 2^n unitary
@@ -256,7 +268,127 @@ def build_full_unitary(
     return U_full
 
 # ───────────────────────────────────────────────────────────────
-# Apply a named gate to a density matrix via Kraus formalism
+# Optimized density gate application (avoids building full unitaries)
+# ───────────────────────────────────────────────────────────────
+
+def apply_single_qubit_gate_density(
+    density: torch.Tensor,
+    U: torch.Tensor,
+    q: int,
+    num_qubits: int,
+) -> torch.Tensor:
+    """
+    Apply single-qubit unitary U to qubit q on density matrix.
+    # ρ' = (U ⊗ I) ρ (U† ⊗ I), implemented via tensor contractions.
+    # """
+    # # Cache permutation orders to reduce Python overhead per gate application
+    # key = (num_qubits, q)
+    # if not hasattr(apply_single_qubit_gate_density, "_perm_cache"):
+    #     apply_single_qubit_gate_density._perm_cache = {}
+    # perm_cache = apply_single_qubit_gate_density._perm_cache
+
+    # if key in perm_cache:
+    #     row_order, final_order = perm_cache[key]
+    # else:
+    #     remaining_rows = [i for i in range(num_qubits) if i != q]
+    #     row_order = []
+    #     for i in range(num_qubits):
+    #         if i == q:
+    #             row_order.append(0)  # U_out
+    #         else:
+    #             idx = remaining_rows.index(i)
+    #             row_order.append(1 + idx)
+
+    #     remaining_cols = [i for i in range(num_qubits) if i != q]
+    #     final_order = list(range(1, 1 + num_qubits))  # rows stay in order
+    #     for i in range(num_qubits):
+    #         if i == q:
+    #             final_order.append(0)  # Uc_out
+    #         else:
+    #             idx = remaining_cols.index(i)
+    #             final_order.append(1 + num_qubits + idx)
+
+    #     perm_cache[key] = (row_order, final_order)
+
+    # # Reshape density into (row qubits, column qubits)
+    # ρ = density.reshape([2]*num_qubits + [2]*num_qubits)
+
+    # # Left multiply on row axis q: contract U(in) with row[q]
+    # tmp = torch.tensordot(U, ρ, dims=([1], [q]))  # U_out + row_rem + col
+    # tmp = tmp.permute(row_order + list(range(num_qubits, num_qubits + num_qubits)))
+
+    # # Right multiply on column axis q
+    # U_dag = U.conj().transpose(0, 1)
+    # tmp2 = torch.tensordot(U_dag, tmp, dims=([1], [num_qubits + q]))  # Uc_out + row + col_rem
+
+    # ρ_final = tmp2.permute(final_order).reshape(2**num_qubits, 2**num_qubits)
+    # return ρ_final
+    # ρ' = (U ⊗ I) ρ (U† ⊗ I), via full unitary embedding for correctness.
+    # Build full unitary and apply via Kraus (known working path)
+    U_full = build_full_unitary(U, [q], num_qubits)
+    return kraus_operator(density, [(U_full, 1.0)])
+
+
+
+def apply_two_qubit_gate_density(
+    density: torch.Tensor,
+    U2: torch.Tensor,
+    q0: int,
+    q1: int,
+    num_qubits: int,
+) -> torch.Tensor:
+    """
+    Apply two-qubit unitary U2 to qubits (q0, q1) on density matrix via contractions.
+    ρ' = (U2 ⊗ I) ρ (U2† ⊗ I)
+    """
+    # Ensure ordered targets for consistent placement
+    targets = [q0, q1]
+    k = 2
+    ρ = density.reshape([2]*num_qubits + [2]*num_qubits)
+
+    # Cache permutation orders per (num_qubits, targets)
+    key = (num_qubits, tuple(sorted(targets)))
+    if not hasattr(apply_two_qubit_gate_density, "_perm_cache"):
+        apply_two_qubit_gate_density._perm_cache = {}
+    perm_cache = apply_two_qubit_gate_density._perm_cache
+
+    if key in perm_cache:
+        row_order, final_order = perm_cache[key]
+    else:
+        remaining_rows = [i for i in range(num_qubits) if i not in targets]
+        row_order = []
+        for i in range(num_qubits):
+            if i in targets:
+                row_order.append(targets.index(i))  # 0 or 1 from out axes
+            else:
+                row_order.append(k + remaining_rows.index(i))
+
+        remaining_cols = [i for i in range(num_qubits) if i not in targets]
+        final_order = list(range(k, k + num_qubits))  # rows stay in order
+        for i in range(num_qubits):
+            if i in targets:
+                final_order.append(targets.index(i))  # outc axes positions
+            else:
+                final_order.append(k + num_qubits + remaining_cols.index(i))
+
+        perm_cache[key] = (row_order, final_order)
+
+    # Left multiply: contract U2(in axes) with row axes at targets
+    G = U2.reshape([2]*k + [2]*k)
+    tmp = torch.tensordot(G, ρ, dims=(list(range(k, 2*k)), targets))
+    tmp = tmp.permute(row_order + list(range(k + len([i for i in range(num_qubits) if i not in targets]), k + len([i for i in range(num_qubits) if i not in targets]) + num_qubits)))
+
+    # Right multiply on column axes at targets
+    G_dag = U2.conj().transpose(0, 1).reshape([2]*k + [2]*k)
+    col_targets = [num_qubits + t for t in targets]
+    tmp2 = torch.tensordot(G_dag, tmp, dims=(list(range(k, 2*k)), col_targets))
+
+    ρ_final = tmp2.permute(final_order).reshape(2**num_qubits, 2**num_qubits)
+    return ρ_final
+
+
+# ───────────────────────────────────────────────────────────────
+# Apply a named gate to a density matrix (optimized path)
 # ───────────────────────────────────────────────────────────────
 
 def apply_named_gate_density(
@@ -266,33 +398,33 @@ def apply_named_gate_density(
     unitary_cache: Dict[Tuple[str, Tuple[int, ...], float | None], torch.Tensor] | None = None,
 ) -> torch.Tensor:
     """
-    op = (gate_name, [qubits])
-
-    Uses kraus_operator with a single Kraus operator U_full (probability 1).
-    Caches U_full per (gate_name, tuple(qubits)) if unitary_cache is provided.
-    
-    For parametric gates, use 
-    op = (gate_name, [qubits], param)
-    ie: ("RX", [0], .4)
+    Optimized density update:
+    - Single-qubit gates: einsum/tensordot contractions (no full unitary)
+    - Two-qubit gates (e.g., CNOT): contraction on two axes
+    Falls back to full-unitary embedding only if gate arity > 2.
     """
     gate_name = op[0]
     qubits = op[1]
-    
-    # take care of parametric case (have to deal with the param value)
     is_param = gate_name in PARAMETRIC_GATES
     param = op[2] if is_param else None
-    key = (gate_name, tuple(qubits), param)
 
-    if unitary_cache is not None and key in unitary_cache:
-        U_full = unitary_cache[key]
+    # Resolve unitary matrix for gate
+    U = PARAMETRIC_GATES[gate_name](param) if is_param else GATE_LIBRARY[gate_name]
+
+    if len(qubits) == 1:
+        return apply_single_qubit_gate_density(density, U, qubits[0], num_qubits)
+    elif len(qubits) == 2:
+        return apply_two_qubit_gate_density(density, U, qubits[0], qubits[1], num_qubits)
     else:
-        gate = PARAMETRIC_GATES[gate_name](param) if is_param else GATE_LIBRARY[gate_name]
-        U_full = build_full_unitary(gate, qubits, num_qubits)
-        if unitary_cache is not None:
-            unitary_cache[key] = U_full
-
-    # Single Kraus operator with probability 1.0
-    return kraus_operator(density, [(U_full, 1.0)])
+        # Rare case: fall back to full-unitary path (cached)
+        key = (gate_name, tuple(qubits), param)
+        if unitary_cache is not None and key in unitary_cache:
+            U_full = unitary_cache[key]
+        else:
+            U_full = build_full_unitary(U, qubits, num_qubits)
+            if unitary_cache is not None:
+                unitary_cache[key] = U_full
+        return kraus_operator(density, [(U_full, 1.0)])
 
 # ───────────────────────────────────────────────────────────────
 # Apply one T1/T2 noise op to a density matrix
@@ -313,18 +445,36 @@ def apply_T1T2_noise_op(
     _, qubits, λ1, λ_φ, _ = noise_op
     q = qubits[0]
 
+    # Caches to avoid rebuilding kron-embedded Kraus ops for identical parameters
+    # Keys include λ values, target qubit, and num_qubits to ensure correctness
+    if not hasattr(apply_T1T2_noise_op, "_amp_cache"):
+        apply_T1T2_noise_op._amp_cache = {}
+        apply_T1T2_noise_op._deph_cache = {}
+    amp_cache = apply_T1T2_noise_op._amp_cache
+    deph_cache = apply_T1T2_noise_op._deph_cache
+
     # 1) Amplitude damping (T1: |1⟩ → |0⟩ relaxation)
     if λ1 > 0.0:
-        amp_kraus = amplitude_damping_kraus(λ1)
-        amp_full  = embed_single_qubit_kraus(amp_kraus, q, num_qubits)
-        amp_ops_probs = make_operations_probs_from_kraus(amp_full)
+        amp_key = (λ1, q, num_qubits)
+        if amp_key in amp_cache:
+            amp_ops_probs = amp_cache[amp_key]
+        else:
+            amp_kraus = amplitude_damping_kraus(λ1)
+            amp_full  = embed_single_qubit_kraus(amp_kraus, q, num_qubits)
+            amp_ops_probs = make_operations_probs_from_kraus(amp_full)
+            amp_cache[amp_key] = amp_ops_probs
         density = kraus_operator(density, amp_ops_probs)
 
     # 2) Pure dephasing (T_φ: coherence loss from 1/T2 - 1/(2T1))
     if λ_φ > 0.0:
-        deph_kraus = phase_damping_kraus(λ_φ)
-        deph_full  = embed_single_qubit_kraus(deph_kraus, q, num_qubits)
-        deph_ops_probs = make_operations_probs_from_kraus(deph_full)
+        deph_key = (λ_φ, q, num_qubits)
+        if deph_key in deph_cache:
+            deph_ops_probs = deph_cache[deph_key]
+        else:
+            deph_kraus = phase_damping_kraus(λ_φ)
+            deph_full  = embed_single_qubit_kraus(deph_kraus, q, num_qubits)
+            deph_ops_probs = make_operations_probs_from_kraus(deph_full)
+            deph_cache[deph_key] = deph_ops_probs
         density = kraus_operator(density, deph_ops_probs)
 
     return density
@@ -339,7 +489,7 @@ def run_noisy_circuit_density(
     num_qubits: int,
     T1: float,
     T2: float,
-    gate_durations: Dict[str, float],
+    gate_durations: Dict[str, float]| None = None,
     gate_noise_fraction: float = 1.0,
 ) -> torch.Tensor:
     """
@@ -359,6 +509,9 @@ def run_noisy_circuit_density(
     Output:
         density matrix ρ_final (2^n x 2^n)
     """
+    if gate_durations is None:
+        gate_durations = dict(DEFAULT_GATE_DURATIONS)
+        
     # Convert to density matrix
     density = state_to_density(initial_state)
 

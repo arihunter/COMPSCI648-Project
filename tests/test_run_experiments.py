@@ -21,6 +21,9 @@ from run_experiments import (
     save_training_history_csv,
     save_summary_csv,
     run_all_experiments,
+    run_unified_noise_sweep,
+    run_kernel_experiment,
+    save_noise_sweep_csv,
     MODEL_TYPES,
     DATASETS
 )
@@ -306,16 +309,21 @@ class TestRunAllExperiments(unittest.TestCase):
         self.assertGreater(len(csv_files), 0)
     
     def test_history_csv_format(self):
-        """Verify history CSV files have correct format."""
+        """Verify training history CSV files have correct format (epoch, loss, acc)."""
         data_dir = ensure_data_dir()
+        # Filter for training history CSVs: exclude noise_sweep, kernel, and summary files
         csv_files = [f for f in os.listdir(data_dir) 
-                     if f.endswith('.csv') and not f.startswith('summary')]
+                     if f.endswith('.csv') 
+                     and not f.startswith('summary')
+                     and 'noise_sweep' not in f
+                     and 'kernel' not in f]
         
         if csv_files:
             filepath = os.path.join(data_dir, csv_files[0])
             with open(filepath, 'r') as f:
                 reader = csv.reader(f)
                 headers = next(reader)
+                # Training history should have exactly: epoch, loss, acc
                 self.assertEqual(headers, ['epoch', 'loss', 'acc'])
 
 
@@ -323,14 +331,18 @@ class TestFileNamingConvention(unittest.TestCase):
     """Test that file naming follows the expected convention."""
     
     def test_history_filename_format(self):
-        """Verify history filename contains expected components."""
+        """Verify training history filename contains expected components."""
         data_dir = ensure_data_dir()
+        # Filter for training history files: exclude noise_sweep, kernel, and summary
         csv_files = [f for f in os.listdir(data_dir) 
-                     if f.endswith('.csv') and not f.startswith('summary')]
+                     if f.endswith('.csv') 
+                     and not f.startswith('summary')
+                     and 'noise_sweep' not in f
+                     and 'kernel' not in f]
         
         if csv_files:
             filename = csv_files[0]
-            # Should contain: model_dataset_t1{T1}_t2{T2}_ep{epochs}_{date}.csv
+            # Training history format: model_dataset_t1{T1}_t2{T2}_ep{epochs}_{date}.csv
             self.assertIn('_t1', filename)
             self.assertIn('_t2', filename)
             self.assertIn('_ep', filename)
@@ -347,6 +359,121 @@ class TestFileNamingConvention(unittest.TestCase):
             self.assertIn('summary_t1', filename)
             self.assertIn('_t2', filename)
             self.assertIn('_ep', filename)
+
+
+class TestNoiseSweep(unittest.TestCase):
+    """Test the unified noise sweep functionality."""
+    
+    def setUp(self):
+        """Create a temporary directory for test files."""
+        self.test_dir = tempfile.mkdtemp()
+    
+    def tearDown(self):
+        """Remove temporary directory."""
+        shutil.rmtree(self.test_dir)
+    
+    def test_run_kernel_experiment_returns_metrics(self):
+        """Verify kernel experiment returns correct structure."""
+        result = run_kernel_experiment(
+            encoding=EncodingType.ANGLE,
+            dataset="moons",
+            T1=100,
+            T2=200
+        )
+        
+        self.assertIsInstance(result, dict)
+        self.assertEqual(result['model_type'], 'kernel')
+        self.assertEqual(result['encoding'], 'angle')
+        self.assertEqual(result['dataset'], 'moons')
+        self.assertEqual(result['T1'], 100)
+        self.assertEqual(result['T2'], 200)
+        self.assertIn('metrics', result)
+        self.assertIn('accuracy', result['metrics'])
+    
+    def test_run_unified_noise_sweep_single_t1(self):
+        """Verify noise sweep runs with minimal configuration (1 epoch, 1 T1 value)."""
+        results = run_unified_noise_sweep(
+            epochs=1,
+            dataset="moons",
+            T1_values=[100],
+            T2_ratio=2.0
+        )
+        
+        self.assertIsInstance(results, list)
+        self.assertGreater(len(results), 0)
+        
+        # Should have results for all model/encoding combinations
+        # 3 models × 2 encodings × 1 T1 value = 6 results
+        self.assertEqual(len(results), 6)
+        
+        for r in results:
+            self.assertIn('model_type', r)
+            self.assertIn('encoding', r)
+            self.assertIn('accuracy', r)
+            self.assertIn('T1', r)
+            self.assertIn('T2', r)
+    
+    def test_save_noise_sweep_csv(self):
+        """Verify noise sweep CSV is saved correctly."""
+        results = [
+            {'model_type': 'deep_vqc', 'encoding': 'angle', 'dataset': 'moons',
+             'T1': 100, 'T2': 200, 'accuracy': 0.85, 'f1': 0.82, 'roc_auc': 0.88},
+            {'model_type': 'kernel', 'encoding': 'angle', 'dataset': 'moons',
+             'T1': 100, 'T2': 200, 'accuracy': 0.75, 'f1': 0.72, 'roc_auc': 0.78}
+        ]
+        filepath = os.path.join(self.test_dir, "noise_sweep_test.csv")
+        
+        save_noise_sweep_csv(results, filepath)
+        
+        self.assertTrue(os.path.exists(filepath))
+        
+        with open(filepath, 'r') as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[0]['model'], 'deep_vqc')
+            self.assertEqual(rows[1]['model'], 'kernel')
+
+
+class TestNoiseSweepPlot(unittest.TestCase):
+    """Test that noise sweep generates a plot file."""
+    
+    def setUp(self):
+        """Create plots directory."""
+        self.plots_dir = os.path.join(os.path.dirname(__file__), '..', 'plots')
+        os.makedirs(self.plots_dir, exist_ok=True)
+        # Track initial plot files
+        self.initial_plots = set(os.listdir(self.plots_dir)) if os.path.exists(self.plots_dir) else set()
+    
+    def test_noise_sweep_generates_plot(self):
+        """Verify that running noise sweep with --plot creates a plot file.
+        
+        This is a minimal integration test using 1 epoch and 1 T1 value.
+        """
+        from visualizer import plot_accuracy_vs_t1
+        
+        # Run minimal noise sweep
+        results = run_unified_noise_sweep(
+            epochs=1,
+            dataset="moons",
+            T1_values=[100],
+            T2_ratio=2.0
+        )
+        
+        # Generate plot
+        import matplotlib
+        matplotlib.use('Agg')  # Non-interactive backend for testing
+        
+        filepath = plot_accuracy_vs_t1(results, "moons", epochs=1, save=True)
+        
+        # Verify plot was created
+        self.assertIsNotNone(filepath)
+        self.assertTrue(os.path.exists(filepath))
+        self.assertTrue(filepath.endswith('.png'))
+        
+        # Clean up test plot
+        if filepath and os.path.exists(filepath):
+            os.remove(filepath)
 
 
 if __name__ == '__main__':

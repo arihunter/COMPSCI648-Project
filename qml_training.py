@@ -2,6 +2,7 @@ from quantum_simulator import run_noisy_circuit_density
 import torch
 import math
 import random
+import os
 from enum import Enum
 
 from constants import DEFAULT_GATE_DURATIONS, DEFAULT_T1, DEFAULT_T2
@@ -251,28 +252,59 @@ def state_encoding(x, n, encoding=EncodingType.ANGLE):
     return state, circuit
 
 # ============================================================
-# Deep Variational QNN, no errors
+# Deep Variational QNN, with optional T1/T2 noise
 # ============================================================
-def deep_vqc_forward(x, theta, depth=3, encoding=EncodingType.ANGLE, n=None):
-    """Forward pass of the noiseless deep VQC, returning ⟨Z0⟩."""
+def deep_vqc_forward(x, theta, depth=3, encoding=EncodingType.ANGLE, n=None, T1=None, T2=None, gate_durations=None, gate_noise_fraction=1.0, cached_encoding=None):
+    """Forward pass of the deep VQC with optional T1/T2 noise, returning ⟨Z0⟩.
+    
+    Args:
+        cached_encoding: If provided, tuple (init_state, encoding_circuit) to skip state_encoding call.
+                         Allows reuse of encoding across multiple forward evaluations with different theta.
+    """
+    if gate_durations is None:
+        gate_durations = dict(DEFAULT_GATE_DURATIONS)
+    
+    # Check theta length matches depth
+    assert len(theta) == 3*depth
+    
     # Calculate number of qubits based on encoding type
     if n is None:
         n = len(x) if encoding == EncodingType.ANGLE else int(math.log2(len(x)))
     
-    # Prep state with desired encoding method
-    state,circ = state_encoding(x,n,encoding)
-    state = apply_circuit_to_ket(state,circ,n)
+    # Use cached encoding if provided, otherwise compute it
+    if cached_encoding is not None:
+        init_state, circ = cached_encoding
+        # Make a copy of the circuit so we don't modify the cached version
+        circ = list(circ)
+    else:
+        init_state, circ = state_encoding(x, n, encoding)
     
-    # Variational layers
+    # Add variational layers to circuit
     idx = 0
     for _ in range(depth):
-        state = apply_gate(state, RY(theta[idx]), [0], n)
-        state = apply_gate(state, RY(theta[idx+1]), [1], n)
-        state = apply_gate(state, CNOT, [0,1], n)
-        state = apply_gate(state, RZ(theta[idx+2]), [0], n)
+        circ += [("RY", [0], theta[idx])]
+        circ += [("RY", [1], theta[idx+1])]
+        circ += [("CNOT", [0, 1])]
+        circ += [("RZ", [0], theta[idx+2])]
         idx += 3
-
-    return expectation_z(state, 0, n)
+    
+    # Use noisy density simulation if T1/T2 provided
+    if T1 is not None and T2 is not None:
+        density = run_noisy_circuit_density(
+            initial_state=init_state,
+            circuit=circ,
+            num_qubits=n,
+            T1=T1,
+            T2=T2,
+            gate_durations=gate_durations,
+            gate_noise_fraction=gate_noise_fraction
+        )
+        Z0 = torch.kron(Z, I2)
+        return torch.real(torch.trace(Z0 @ density))
+    else:
+        # Noiseless ket simulation
+        state = apply_circuit_to_ket(init_state, circ, n)
+        return expectation_z(state, 0, n)
 
 # ============================================================
 # Noise-aware QNN (density matrix)
@@ -299,7 +331,8 @@ Noisy-VQC forward pass (one layer), with T1/T2 noise model.
 def noisy_qnn_forward(x, theta, T1=DEFAULT_T1, T2=DEFAULT_T2,
     gate_durations=None,  # needed for noise model (all times in μs)
     encoding=EncodingType.ANGLE,
-    gate_noise_fraction=1.0):
+    gate_noise_fraction=1.0,
+    cached_encoding=None):  # Optional cached (init_state, encoding_circuit)
 
     if gate_durations is None:
         gate_durations = dict(DEFAULT_GATE_DURATIONS)
@@ -307,7 +340,12 @@ def noisy_qnn_forward(x, theta, T1=DEFAULT_T1, T2=DEFAULT_T2,
     # Calculate number of qubits based on encoding type
     n = len(x) if encoding == EncodingType.ANGLE else int(math.log2(len(x)))
     
-    init_state, circ = state_encoding(x,n,encoding) # circ now has the first RY layer (if angle encoding)
+    # Use cached encoding if provided, otherwise compute it
+    if cached_encoding is not None:
+        init_state, circ = cached_encoding
+        circ = list(circ)  # Copy to avoid modifying cached version
+    else:
+        init_state, circ = state_encoding(x, n, encoding)  # circ now has the first RY layer (if angle encoding)
     
     # First RY trainable layer
     circ += param_gate_layer("RY",theta,[0,1]) 
@@ -382,9 +420,80 @@ def quantum_kernel(x1, x2, encoding=EncodingType.ANGLE, T1=None, T2=None,
         # Noisy: trace distance between density matrices
         return torch.real(torch.trace(ψ1 @ ψ2))
 
+def kernel_predict_batch(X_test, X_train, y_train, encoding=EncodingType.ANGLE, T1=None, T2=None,
+    gate_durations=None):
+    """Batch predict using cached training feature maps - much faster than repeated kernel_predict.
+    
+    Parallelizes feature map computation across all available cores.
+    Computes feature maps once per training/test point instead of once per pair.
+    """
+    if gate_durations is None:
+        gate_durations = dict(DEFAULT_GATE_DURATIONS)
+    
+    # Set up multiprocessing for feature map computation (parallelized by default)
+    from torch.multiprocessing import Pool, set_start_method
+    try:
+        set_start_method('spawn', force=True)
+    except RuntimeError:
+        pass  # Already set
+    
+    n_workers = max(1, os.cpu_count() - 1)
+    pool = None
+    try:
+        pool = Pool(processes=n_workers)
+        
+        # Collect all feature map tasks
+        all_tasks = []
+        for xi in X_train:
+            all_tasks.append((xi, encoding, T1, T2))
+        for xi in X_test:
+            all_tasks.append((xi, encoding, T1, T2))
+        
+        # Compute all feature maps in parallel
+        print(f"Computing {len(X_train)} + {len(X_test)} feature maps across {n_workers} workers...")
+        chunksize = max(1, len(all_tasks) // (n_workers * 4))
+        features_list = list(pool.imap_unordered(_evaluate_single_feature_map_task, 
+                                                  all_tasks, chunksize=chunksize))
+        
+        train_features = features_list[:len(X_train)]
+        test_features = features_list[len(X_train):]
+        
+        pool.close()
+        pool.join()
+    except Exception as e:
+        print(f"Warning: Could not set up multiprocessing ({e}), falling back to sequential")
+        # Pre-compute all training feature maps sequentially
+        print(f"Computing {len(X_train)} training feature maps...")
+        train_features = [quantum_feature_map(xi, encoding, T1, T2, gate_durations) for xi in X_train]
+        
+        print(f"Computing {len(X_test)} test feature maps...")
+        test_features = [quantum_feature_map(x, encoding, T1, T2, gate_durations) for x in X_test]
+    
+    # For each test point, compute its feature map and compare against cached training features
+    predictions = []
+    for i, x_feature in enumerate(test_features):
+        if (i + 1) % max(1, len(X_test) // 10) == 0 or i == 0:
+            print(f"  Computing kernel overlaps for test point {i+1}/{len(X_test)}...")
+        
+        # Compute kernel values against all training points using cached features
+        if isinstance(x_feature, torch.Tensor) and x_feature.dim() == 1:
+            # Noiseless: ket vector inner products
+            vals = torch.tensor([torch.abs(torch.dot(x_feature.conj(), ψi))**2 for ψi in train_features])
+        else:
+            # Noisy: trace overlaps with density matrices
+            vals = torch.tensor([torch.real(torch.trace(x_feature @ ψi)) for ψi in train_features])
+        
+        pred = torch.sign(torch.sum(vals * y_train))
+        predictions.append(pred)
+    
+    return torch.tensor(predictions)
+
 def kernel_predict(x, X_train, y_train, encoding=EncodingType.ANGLE, T1=None, T2=None,
     gate_durations=None):
-    """Predict sign label via kernel sum against training set."""
+    """Predict sign label via kernel sum against training set.
+    
+    Note: For multiple predictions, use kernel_predict_batch() which caches training features.
+    """
     if gate_durations is None:
         gate_durations = dict(DEFAULT_GATE_DURATIONS)
     vals = torch.tensor([
@@ -417,7 +526,115 @@ def kernel_predict(x, X_train, y_train, encoding=EncodingType.ANGLE, T1=None, T2
         Otherwise: None
 
     """
-def train(model_type="deep_vqc", encoding=EncodingType.ANGLE, epochs=25, dataset="real", record_metrics=False, T1=DEFAULT_T1, T2=DEFAULT_T2):
+# ───────────────────────────────────────────────────────────────
+# Parallelized training helpers
+# ───────────────────────────────────────────────────────────────
+
+def _evaluate_single_gradient_task(task):
+    """
+    Evaluate a single parameter-shift gradient task.
+    
+    Task format: (sample_idx, xi, yi, theta, param_idx, model_type, encoding_cache, 
+                  deep_vqc_depth, T1, T2, encoding, shift_direction)
+    
+    Returns: (sample_idx, param_idx, shift_dir, forward_value, loss_contribution)
+    """
+    (sample_idx, xi, yi, theta, param_idx, model_type, cached_enc,
+     deep_vqc_depth, T1, T2, encoding, shift_dir) = task
+    
+    # Create shifted parameters
+    theta_shifted = theta.clone()
+    shift = math.pi / 2
+    theta_shifted[param_idx] += shift * shift_dir  # +shift or -shift
+    
+    # Evaluate forward pass
+    if model_type == "deep_vqc":
+        pred = deep_vqc_forward(xi, theta_shifted, deep_vqc_depth, encoding, 
+                               T1=T1, T2=T2, cached_encoding=cached_enc)
+    else:  # noise_aware
+        pred = noisy_qnn_forward(xi, theta_shifted, T1=T1, T2=T2, 
+                                encoding=encoding, cached_encoding=cached_enc)
+    
+    return (sample_idx, param_idx, shift_dir, pred.item(), (pred - yi).item())
+
+
+def _evaluate_sample_batch(batch_task):
+    """
+    Evaluate gradient contributions for a batch of training samples.
+    
+    This batches multiple samples together to amortize IPC costs.
+    Each worker processes all parameter shifts for its assigned samples.
+    
+    Args:
+        batch_task: (sample_indices, sample_data, theta, config)
+            - sample_indices: list of sample indices
+            - sample_data: list of (xi, yi, cached_enc) tuples
+            - theta: parameter tensor
+            - config: (model_type, deep_vqc_depth, T1, T2, encoding)
+    
+    Returns:
+        List of (sample_idx, gradients_array, baseline_pred, loss_contrib) tuples
+    """
+    sample_indices, sample_data, theta, config = batch_task
+    model_type, deep_vqc_depth, T1, T2, encoding = config
+    
+    results = []
+    n_params = len(theta)
+    shift = math.pi / 2
+    
+    for idx, (xi, yi, cached_enc) in zip(sample_indices, sample_data):
+        # Compute baseline prediction
+        if model_type == "deep_vqc":
+            baseline_pred = deep_vqc_forward(xi, theta, deep_vqc_depth, encoding,
+                                            T1=T1, T2=T2, cached_encoding=cached_enc)
+        else:  # noise_aware
+            baseline_pred = noisy_qnn_forward(xi, theta, T1=T1, T2=T2,
+                                             encoding=encoding, cached_encoding=cached_enc)
+        
+        baseline_val = baseline_pred.item()
+        loss_contrib = (baseline_val - yi) ** 2
+        
+        # Compute parameter-shift gradients for all parameters
+        grads = torch.zeros(n_params)
+        for p in range(n_params):
+            # Positive shift
+            theta_plus = theta.clone()
+            theta_plus[p] += shift
+            if model_type == "deep_vqc":
+                pred_plus = deep_vqc_forward(xi, theta_plus, deep_vqc_depth, encoding,
+                                            T1=T1, T2=T2, cached_encoding=cached_enc)
+            else:
+                pred_plus = noisy_qnn_forward(xi, theta_plus, T1=T1, T2=T2,
+                                             encoding=encoding, cached_encoding=cached_enc)
+            
+            # Negative shift
+            theta_minus = theta.clone()
+            theta_minus[p] -= shift
+            if model_type == "deep_vqc":
+                pred_minus = deep_vqc_forward(xi, theta_minus, deep_vqc_depth, encoding,
+                                             T1=T1, T2=T2, cached_encoding=cached_enc)
+            else:
+                pred_minus = noisy_qnn_forward(xi, theta_minus, T1=T1, T2=T2,
+                                              encoding=encoding, cached_encoding=cached_enc)
+            
+            # Parameter-shift rule
+            loss_plus = (pred_plus.item() - yi) ** 2
+            loss_minus = (pred_minus.item() - yi) ** 2
+            grads[p] = 0.5 * (loss_plus - loss_minus)
+        
+        results.append((idx, grads, baseline_val, loss_contrib))
+    
+    return results
+
+
+def _evaluate_single_feature_map_task(task):
+    """Evaluate a single feature map for kernel model."""
+    xi, encoding, T1, T2 = task
+    return quantum_feature_map(xi, encoding, T1, T2)
+
+
+def train(model_type="deep_vqc", encoding=EncodingType.ANGLE, epochs=25, dataset="real", 
+          record_metrics=False, T1=DEFAULT_T1, T2=DEFAULT_T2):
     if dataset == "real":
         X_train, X_test, y_train, y_test = make_real_dataset(encoding=encoding)
     elif dataset == "moons":
@@ -429,9 +646,8 @@ def train(model_type="deep_vqc", encoding=EncodingType.ANGLE, epochs=25, dataset
     deep_vqc_depth = 3
 
     if model_type == "kernel":
-        scores = torch.tensor([
-            kernel_predict(x, X_train, y_train, encoding, T1, T2) for x in X_test
-        ])
+        # Use batch prediction with cached feature maps for massive speedup
+        scores = kernel_predict_batch(X_test, X_train, y_train, encoding, T1, T2)
         metrics = compute_metrics(scores, y_test)
         print(f"{dataset.upper()} KERNEL TEST METRICS:", metrics)
         return
@@ -442,53 +658,116 @@ def train(model_type="deep_vqc", encoding=EncodingType.ANGLE, epochs=25, dataset
     loss_history = []
     acc_history = []
 
+    # Pre-compute encodings for all training samples to reuse across epochs and parameter shifts
+    n_qubits = len(X_train[0]) if encoding == EncodingType.ANGLE else int(math.log2(len(X_train[0])))
+    encoding_cache = {}
+    for i in range(len(X_train)):
+        xi = X_train[i]
+        init_state, circ = state_encoding(xi, n_qubits, encoding)
+        encoding_cache[i] = (init_state, circ)
+
+    # Set up multiprocessing for gradient evaluation (parallelized by default)
+    from torch.multiprocessing import Pool, set_start_method
+    try:
+        set_start_method('spawn', force=True)
+    except RuntimeError:
+        pass  # Already set
+    
+    n_workers = max(1, os.cpu_count() - 1)
+    pool = None
+    try:
+        pool = Pool(processes=n_workers)
+    except Exception as e:
+        print(f"Warning: Could not set up multiprocessing ({e}), falling back to sequential")
+
     for epoch in range(epochs):
         grads = torch.zeros_like(theta)
         total_loss = 0.0
 
-        for i in range(len(X_train)):
-            xi, yi = X_train[i], y_train[i]
+        if pool is not None:
+            # Create batched tasks: group samples to reduce IPC overhead
+            # Each batch processes multiple samples together in one worker call
+            batch_size = max(5, len(X_train) // (n_workers * 2))  # 2 batches per worker minimum
+            batch_tasks = []
+            
+            # Prepare shared config to avoid repeated serialization
+            config = (model_type, deep_vqc_depth, T1, T2, encoding)
+            
+            for batch_start in range(0, len(X_train), batch_size):
+                batch_end = min(batch_start + batch_size, len(X_train))
+                sample_indices = list(range(batch_start, batch_end))
+                sample_data = [(X_train[i], y_train[i], encoding_cache[i]) 
+                              for i in sample_indices]
+                
+                batch_tasks.append((sample_indices, sample_data, theta, config))
+            
+            # Process batches in parallel with larger chunks
+            # Target: each chunk should have substantial computation (multiple samples)
+            chunksize = max(1, len(batch_tasks) // n_workers)  # At least 1 batch per worker
+            batch_results = pool.map(_evaluate_sample_batch, batch_tasks, chunksize=chunksize)
+            
+            # Flatten results from all batches
+            results = [item for batch in batch_results for item in batch]
+            
+            # Process batched results
+            for result in results:
+                sample_idx, sample_grads, baseline_val, loss_contrib = result
+                grads += sample_grads
+                total_loss += loss_contrib
+        else:
+            # Sequential fallback
+            for i in range(len(X_train)):
+                xi, yi = X_train[i], y_train[i]
+                cached_enc = encoding_cache[i]
 
-            pred = (
-                deep_vqc_forward(xi, theta, deep_vqc_depth, encoding)
-                if model_type == "deep_vqc"
-                else noisy_qnn_forward(xi, theta, T1=T1, T2=T2, encoding=encoding)
-            )
-
-            total_loss += (pred - yi)**2
-
-            for p in range(len(theta)):
-                shift = math.pi / 2
-                tp, tm = theta.clone(), theta.clone()
-                tp[p] += shift
-                tm[p] -= shift
-
-                fp = (
-                    deep_vqc_forward(xi, tp, deep_vqc_depth, encoding)
+                pred = (
+                    deep_vqc_forward(xi, theta, deep_vqc_depth, encoding, T1=T1, T2=T2, cached_encoding=cached_enc)
                     if model_type == "deep_vqc"
-                    else noisy_qnn_forward(xi, tp, T1=T1, T2=T2, encoding=encoding)
-                )
-                fm = (
-                    deep_vqc_forward(xi, tm, deep_vqc_depth, encoding)
-                    if model_type == "deep_vqc"
-                    else noisy_qnn_forward(xi, tm, T1=T1, T2=T2, encoding=encoding)
+                    else noisy_qnn_forward(xi, theta, T1=T1, T2=T2, encoding=encoding, cached_encoding=cached_enc)
                 )
 
-                grads[p] += 0.5 * ((fp - yi)**2 - (fm - yi)**2)
+                total_loss += (pred - yi)**2
+
+                for p in range(len(theta)):
+                    shift = math.pi / 2
+                    tp, tm = theta.clone(), theta.clone()
+                    tp[p] += shift
+                    tm[p] -= shift
+
+                    fp = (
+                        deep_vqc_forward(xi, tp, deep_vqc_depth, encoding, T1=T1, T2=T2, cached_encoding=cached_enc)
+                        if model_type == "deep_vqc"
+                        else noisy_qnn_forward(xi, tp, T1=T1, T2=T2, encoding=encoding, cached_encoding=cached_enc)
+                    )
+                    fm = (
+                        deep_vqc_forward(xi, tm, deep_vqc_depth, encoding, T1=T1, T2=T2, cached_encoding=cached_enc)
+                        if model_type == "deep_vqc"
+                        else noisy_qnn_forward(xi, tm, T1=T1, T2=T2, encoding=encoding, cached_encoding=cached_enc)
+                    )
+
+                    grads[p] += 0.5 * ((fp - yi)**2 - (fm - yi)**2)
 
         # Update
         theta -= lr * grads / len(X_train)
 
         # Record loss
-        loss_avg = total_loss.item() / len(X_train)
+        loss_avg = (total_loss.item() if torch.is_tensor(total_loss) else total_loss) / len(X_train)
         loss_history.append(loss_avg)
 
-        # Test accuracy
+        # Cache test encodings on first epoch
+        if epoch == 0:
+            test_encoding_cache = {}
+            for j in range(len(X_test)):
+                xj = X_test[j]
+                init_state, circ = state_encoding(xj, n_qubits, encoding)
+                test_encoding_cache[j] = (init_state, circ)
+
+        # Test accuracy using cached test encodings
         scores_test = torch.tensor([
-            deep_vqc_forward(x, theta, deep_vqc_depth, encoding)
+            deep_vqc_forward(x, theta, deep_vqc_depth, encoding, T1=T1, T2=T2, cached_encoding=test_encoding_cache[j])
             if model_type == "deep_vqc"
-            else noisy_qnn_forward(x, theta, T1=T1, T2=T2, encoding=encoding)
-            for x in X_test
+            else noisy_qnn_forward(x, theta, T1=T1, T2=T2, encoding=encoding, cached_encoding=test_encoding_cache[j])
+            for j, x in enumerate(X_test)
         ])
         metric_dict = compute_metrics(scores_test, y_test)
         acc_history.append(metric_dict["accuracy"])
@@ -497,6 +776,11 @@ def train(model_type="deep_vqc", encoding=EncodingType.ANGLE, epochs=25, dataset
             f"{dataset.upper()} | {model_type.upper()} | Epoch {epoch+1:02d} | "
             f"Loss {loss_avg:.4f} | Acc {metric_dict['accuracy']:.3f}"
         )
+
+    # Clean up pool
+    if pool is not None:
+        pool.close()
+        pool.join()
 
     # Return metrics history if requested
     if record_metrics:
