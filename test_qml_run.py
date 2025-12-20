@@ -90,5 +90,33 @@ class TestAllConfigurationsTraining(unittest.TestCase):
         train(model_type="kernel", encoding=EncodingType.AMPLITUDE, epochs=2)
 
 
+class TestAllConfigurationsTrainingMoons(unittest.TestCase):
+    """Test training with 2 epochs for all configurations on moons dataset."""
+
+    def test_deep_vqc_angle_encoding_moons(self):
+        print("\n=== Testing Deep VQC with Angle Encoding on Moons (2 epochs) ===")
+        train(model_type="deep_vqc", encoding=EncodingType.ANGLE, epochs=2, dataset="moons")
+
+    def test_noise_aware_angle_encoding_moons(self):
+        print("\n=== Testing Noise-Aware QNN with Angle Encoding on Moons (2 epochs) ===")
+        train(model_type="noise_aware", encoding=EncodingType.ANGLE, epochs=2, dataset="moons")
+
+    def test_kernel_angle_encoding_moons(self):
+        print("\n=== Testing Quantum Kernel with Angle Encoding on Moons (2 epochs) ===")
+        train(model_type="kernel", encoding=EncodingType.ANGLE, epochs=2, dataset="moons")
+
+    def test_deep_vqc_amplitude_encoding_moons(self):
+        print("\n=== Testing Deep VQC with Amplitude Encoding on Moons (2 epochs) ===")
+        train(model_type="deep_vqc", encoding=EncodingType.AMPLITUDE, epochs=2, dataset="moons")
+
+    def test_noise_aware_amplitude_encoding_moons(self):
+        print("\n=== Testing Noise-Aware QNN with Amplitude Encoding on Moons (2 epochs) ===")
+        train(model_type="noise_aware", encoding=EncodingType.AMPLITUDE, epochs=2, dataset="moons")
+
+    def test_kernel_amplitude_encoding_moons(self):
+        print("\n=== Testing Quantum Kernel with Amplitude Encoding on Moons (2 epochs) ===")
+        train(model_type="kernel", encoding=EncodingType.AMPLITUDE, epochs=2, dataset="moons")
+
+
 if __name__ == "__main__":
     unittest.main()

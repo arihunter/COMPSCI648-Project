@@ -6,11 +6,11 @@ from enum import Enum
 
 DEBUG = False
 
-
 class EncodingType(Enum):
     """Enumeration for quantum feature encoding types."""
     ANGLE = "angle"
     AMPLITUDE = "amplitude"
+    
 from quantum_simulator import (
     zero_state,
     custom_state,
@@ -20,19 +20,13 @@ from quantum_simulator import (
     RZ,
     RX,
     CNOT,
-    state_to_density,
-    build_full_unitary,
-    kraus_operator,
-    apply_named_gate_density,
-    apply_T1T2_noise_op,
     Z,
     I2
 )
 
-
-
 # sklearn only for data (this is standard + allowed)
 from sklearn.datasets import load_breast_cancer
+from sklearn.datasets import make_moons
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.model_selection import train_test_split
@@ -57,7 +51,6 @@ def make_real_dataset(test_size=0.3, seed=42, encoding=EncodingType.ANGLE):
     X = PCA(n_components=n_components).fit_transform(X)
 
     # scale to [-π, π] for angle encoding (or normalized range for amplitude)
-    
     if encoding == EncodingType.ANGLE:
         X = math.pi * X / X.max(axis=0)
 
@@ -74,6 +67,58 @@ def make_real_dataset(test_size=0.3, seed=42, encoding=EncodingType.ANGLE):
         torch.tensor(y_train, dtype=torch.float32),
         torch.tensor(y_test, dtype=torch.float32),
     )
+
+# ============================================================
+# New: make_moons Dataset
+# ============================================================
+
+def make_moons_dataset(test_size=0.3, seed=42, noise=0.15, encoding=EncodingType.ANGLE):
+    """
+    Generates a binary classification dataset (two interleaving moons).
+    Labels {0,1} are mapped to {-1,+1}.
+    """
+    X, y = make_moons(n_samples=500, noise=noise, random_state=seed)  # binary labels 0/1  
+    y = 2 * y - 1  # convert {0,1} to {-1,+1}
+
+    # Standardize base 2D features
+    X = StandardScaler().fit_transform(X)
+
+    # Match feature dimensionality to encoding logic (PCA where possible)
+    # - ANGLE encoding: 2 components → 2 qubits
+    # - AMPLITUDE encoding: need 4 real features → 2^2 amplitudes for 2 qubits
+    if encoding == EncodingType.AMPLITUDE:
+        if X.shape[1] < 4:
+            # Pad with zeros in alternating slots: [x1, 0, x2, 0]
+            # Each adjacent pair feeds one qubit amplitude; keeping one value non-zero per pair
+            # avoids initializing both amplitudes to zero and wasting that qubit.
+            X_pad = torch.zeros((X.shape[0], 4), dtype=torch.float32)
+            X_pad[:, 0] = torch.tensor(X[:, 0], dtype=torch.float32)
+            X_pad[:, 2] = torch.tensor(X[:, 1], dtype=torch.float32)
+            X = X_pad.numpy()
+        else:
+            X = PCA(n_components=4).fit_transform(X)
+    else:
+        X = PCA(n_components=2).fit_transform(X)
+
+    # Scale to [-π, π] for ANGLE encoding (consistent with make_real_dataset)
+    if encoding == EncodingType.ANGLE:
+        X = math.pi * X / X.max(axis=0)
+
+    # Split
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y,
+        test_size=test_size,
+        random_state=seed,
+        stratify=y
+    )
+
+    return (
+        torch.tensor(X_train, dtype=torch.float32),
+        torch.tensor(X_test, dtype=torch.float32),
+        torch.tensor(y_train, dtype=torch.float32),
+        torch.tensor(y_test, dtype=torch.float32),
+    )
+
 
 # ============================================================
 # Metrics
@@ -143,25 +188,25 @@ def expectation_z(state, qubit, n):
         op = mat if op is None else torch.kron(op, mat)
     return torch.real(state.conj() @ (op @ state))
 
-"""
-Encoding methods - angle encoding, and amplitude encoding. Returns normalized ket vector state, and circuit
+    """
+    Encoding methods - angle encoding, and amplitude encoding. Returns normalized ket vector state, and circuit
 
-x - input vector
-n - amount of qubits
-encoding - enum EncodingType
+    x - input vector
+    n - amount of qubits
+    encoding - enum EncodingType
 
-Throws error if the encoding type is not known.
-Will return state and circ, if circ is nonempty - the state encoding method needs it to be applied to the state to be initialized. This allows for error models that apply noise during state preparation.
+    Throws error if the encoding type is not known.
+    Will return state and circ, if circ is nonempty - the state encoding method needs it to be applied to the state to be initialized. This allows for error models that apply noise during state preparation.
 
-EX:
-state, circuit = state_encoding(x, n, encoding=EncodingType.ANGLE)
-TO GET KET:
-state = apply_circuit_to_ket(state, circuit, n)
+    EX:
+    state, circuit = state_encoding(x, n, encoding=EncodingType.ANGLE)
+    TO GET KET:
+    state = apply_circuit_to_ket(state, circuit, n)
 
-TO USE DENSITY SIM WITH NOISE:
-density = state_to_density(state)
-density = run_noisy_circuit_density(density, circuit, n, T1, T2, gate_durations)
-"""
+    TO USE DENSITY SIM WITH NOISE:
+    density = state_to_density(state)
+    density = run_noisy_circuit_density(density, circuit, n, T1, T2, gate_durations)
+    """
 def state_encoding(x, n, encoding=EncodingType.ANGLE):
     # Specify encoding type 
     # custom_state(x) -> Creates arbitrary normalized amplitude state (ignores gate errors, just creats perfect state)
@@ -278,6 +323,7 @@ def noisy_qnn_forward(x, theta, T1=100, T2=200,
 # ============================================================
 # Quantum Kernel Model
 # ============================================================
+
 def quantum_feature_map(x, encoding=EncodingType.ANGLE):
     # Calculate number of qubits based on encoding type
     n = len(x) if encoding == EncodingType.ANGLE else int(math.log2(len(x)))
@@ -298,24 +344,56 @@ def kernel_predict(x, X_train, y_train, encoding = EncodingType.ANGLE):
 # ============================================================
 # Training
 # ============================================================
-def train(model_type="deep_vqc",encoding=EncodingType.ANGLE,epochs = 25):
-    X_train, X_test, y_train, y_test = make_real_dataset(encoding=encoding)
-    lr = 0.1
-
-    deep_vqc_depth = 3 # layers of VQC
+    """Run model training
     
+    model_type: 
+        "deep_vqc" - variational quantum circuit with 3 layers
+        "noise_aware" - noise-aware QNN with 1 layer
+        "kernel" - quantum kernel model (no training, just prediction)
+    encoding:
+        EncodingType.ANGLE - angle encoding
+        EncodingType.AMPLITUDE - amplitude encoding
+    epochs: number of training epochs
+    dataset:
+        "real" - breast cancer dataset
+        "moons" - make_moons dataset
+    record_metrics: if True, returns training metrics (loss, accuracy) history for plotting
+    T1: T1 relaxation time for noise model (µs)
+    T2: T2 dephasing time for noise model (µs)
+    
+    Returns:
+        If record_metrics=True: dict with loss_history, acc_history, final_metrics, etc.
+        Otherwise: None
+
+    """
+def train(model_type="deep_vqc", encoding=EncodingType.ANGLE, epochs=25, dataset="real", record_metrics=False, T1=100, T2=200):
+    if dataset == "real":
+        X_train, X_test, y_train, y_test = make_real_dataset(encoding=encoding)
+    elif dataset == "moons":
+        X_train, X_test, y_train, y_test = make_moons_dataset(encoding=encoding)
+    else:
+        raise Exception("Unknown dataset")
+
+    lr = 0.1
+    deep_vqc_depth = 3
+
     if model_type == "kernel":
         scores = torch.tensor([
-            kernel_predict(x, X_train, y_train,encoding) for x in X_test
+            kernel_predict(x, X_train, y_train, encoding) for x in X_test
         ])
         metrics = compute_metrics(scores, y_test)
-        print("KERNEL TEST METRICS:", metrics)
+        print(f"{dataset.upper()} KERNEL TEST METRICS:", metrics)
         return
 
     theta = torch.randn(9 if model_type == "deep_vqc" else 3) * 0.1
 
+    # For plotting
+    loss_history = []
+    acc_history = []
+
     for epoch in range(epochs):
         grads = torch.zeros_like(theta)
+        total_loss = 0.0
 
         for i in range(len(X_train)):
             xi, yi = X_train[i], y_train[i]
@@ -323,12 +401,10 @@ def train(model_type="deep_vqc",encoding=EncodingType.ANGLE,epochs = 25):
             pred = (
                 deep_vqc_forward(xi, theta, deep_vqc_depth, encoding)
                 if model_type == "deep_vqc"
-                else noisy_qnn_forward(xi, theta, encoding=encoding)
+                else noisy_qnn_forward(xi, theta, T1=T1, T2=T2, encoding=encoding)
             )
-            
-            # Debug first sample of deep_vqc
-            if model_type == "deep_vqc" and epoch == 0 and i == 0:
-                print(f"  Initial pred = {pred.item():.6f}, label = {yi.item():.1f}")
+
+            total_loss += (pred - yi)**2
 
             for p in range(len(theta)):
                 shift = math.pi / 2
@@ -339,45 +415,51 @@ def train(model_type="deep_vqc",encoding=EncodingType.ANGLE,epochs = 25):
                 fp = (
                     deep_vqc_forward(xi, tp, deep_vqc_depth, encoding)
                     if model_type == "deep_vqc"
-                    else noisy_qnn_forward(xi, tp, encoding=encoding)
+                    else noisy_qnn_forward(xi, tp, T1=T1, T2=T2, encoding=encoding)
                 )
                 fm = (
                     deep_vqc_forward(xi, tm, deep_vqc_depth, encoding)
                     if model_type == "deep_vqc"
-                    else noisy_qnn_forward(xi, tm, encoding=encoding)
+                    else noisy_qnn_forward(xi, tm, T1=T1, T2=T2, encoding=encoding)
                 )
-                
-                # Debug: check if outputs are changing
-                if model_type == "deep_vqc" and epoch == 0 and i == 0 and p == 0:
-                    print(f"  DEBUG: f+ = {fp.item():.6f}, f- = {fm.item():.6f}, diff = {(fp-fm).item():.6f}")
 
                 grads[p] += 0.5 * ((fp - yi)**2 - (fm - yi)**2)
 
+        # Update
         theta -= lr * grads / len(X_train)
 
+        # Record loss
+        loss_avg = total_loss.item() / len(X_train)
+        loss_history.append(loss_avg)
+
+        # Test accuracy
         scores_test = torch.tensor([
             deep_vqc_forward(x, theta, deep_vqc_depth, encoding)
             if model_type == "deep_vqc"
-            else noisy_qnn_forward(x, theta, encoding=encoding)
+            else noisy_qnn_forward(x, theta, T1=T1, T2=T2, encoding=encoding)
             for x in X_test
         ])
-
-        metrics = compute_metrics(scores_test, y_test)
-        
-        # Debug metrics
-        grad_norm = torch.norm(grads).item()
-        param_norm = torch.norm(theta).item()
+        metric_dict = compute_metrics(scores_test, y_test)
+        acc_history.append(metric_dict["accuracy"])
 
         print(
-            f"{model_type.upper()} | Epoch {epoch:02d} | "
-            f"Acc {metrics['accuracy']:.3f} | "
-            f"Prec {metrics['precision']:.3f} | "
-            f"Rec {metrics['recall']:.3f} | "
-            f"F1 {metrics['f1']:.3f} | "
-            f"AUC {metrics['roc_auc']:.3f} | "
-            f"GradNorm {grad_norm:.6f} | "
-            f"ParamNorm {param_norm:.6f}"
+            f"{dataset.upper()} | {model_type.upper()} | Epoch {epoch+1:02d} | "
+            f"Loss {loss_avg:.4f} | Acc {metric_dict['accuracy']:.3f}"
         )
+
+    # Return metrics history if requested
+    if record_metrics:
+        return {
+            'loss_history': loss_history,
+            'acc_history': acc_history,
+            'final_metrics': metric_dict,
+            'model_type': model_type,
+            'dataset': dataset,
+            'encoding': encoding.value,
+            'epochs': epochs
+        }
+
+
 
 # ============================================================
 # Run
