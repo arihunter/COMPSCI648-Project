@@ -480,6 +480,45 @@ class TestKrausHelpers(TestHelper):
         self.assertEqual(noisy[2][0], "CNOT")
         self.assertEqual(noisy[2][1], [0, 1])
 
+    def test_add_time_based_noise_respects_T1_T2_cache(self):
+        """Ensure cached relaxation rates are keyed by T1/T2 so different times yield different λ values."""
+        circuit = [("H", [0])]
+        num_qubits = 1
+        gate_durations = {"H": 1.0}
+
+        # Two distinct coherence settings with same idle time (from gate duration)
+        T1_a, T2_a = 10.0, 12.0
+        T1_b, T2_b = 50.0, 80.0
+
+        noisy_a = add_time_based_noise(
+            circuit=circuit,
+            num_qubits=num_qubits,
+            T1=T1_a,
+            T2=T2_a,
+            gate_durations=gate_durations,
+            gate_noise_fraction=1.0,  # ensures one noise op during gate
+        )
+
+        noisy_b = add_time_based_noise(
+            circuit=circuit,
+            num_qubits=num_qubits,
+            T1=T1_b,
+            T2=T2_b,
+            gate_durations=gate_durations,
+            gate_noise_fraction=1.0,
+        )
+
+        # Both should have: noise op then H
+        self.assertEqual(noisy_a[0][0], "T1T2_NOISE")
+        self.assertEqual(noisy_b[0][0], "T1T2_NOISE")
+
+        λ1_a, λ2_a = noisy_a[0][2], noisy_a[0][3]
+        λ1_b, λ2_b = noisy_b[0][2], noisy_b[0][3]
+
+        # Different T1/T2 must yield different noise parameters
+        self.assertNotAlmostEqual(λ1_a, λ1_b)
+        self.assertNotAlmostEqual(λ2_a, λ2_b)
+
     def test_gate_times_realistic_superconducting(self):
         """Verify gate durations match realistic superconducting transmon hardware (all times in μs)."""
         # Realistic values in microseconds (1 ns = 0.001 μs)
@@ -671,6 +710,53 @@ class TestDensityExecutor(TestHelper):
 
         tr_final = torch.trace(ρ_final).real.item()
         self.assertAlmostEqual(tr_final, 1.0, places=6)
+
+    def test_single_qubit_gate_density_purity_preserved(self):
+        """
+        Regression test: applying a single-qubit gate to a pure density matrix
+        should preserve purity (trace of ρ²).
+        Tests that apply_single_qubit_gate_density doesn't corrupt the state.
+        """
+        n_qubits = 2
+        init_state = zero_state(n_qubits)
+        
+        # Test single RY gate
+        circuit = [("RY", [0], 0.5)]
+        ρ_final = run_noisy_circuit_density(
+            initial_state=init_state,
+            circuit=circuit,
+            num_qubits=n_qubits,
+            T1=0,
+            T2=0,
+        )
+        
+        purity = torch.real(torch.trace(ρ_final @ ρ_final)).item()
+        self.assertGreater(purity, 0.999, 
+                          f"RY gate degraded purity to {purity}; should be ~1.0 for pure state")
+    
+    def test_multiple_single_qubit_gates_purity(self):
+        """
+        Verify purity is preserved through multiple single-qubit gate applications.
+        """
+        n_qubits = 2
+        init_state = zero_state(n_qubits)
+        
+        circuit = [
+            ("RY", [0], 0.5),
+            ("RY", [1], -0.3),
+            ("RX", [0], 0.7),
+        ]
+        ρ_final = run_noisy_circuit_density(
+            initial_state=init_state,
+            circuit=circuit,
+            num_qubits=n_qubits,
+            T1=0,
+            T2=0,
+        )
+        
+        purity = torch.real(torch.trace(ρ_final @ ρ_final)).item()
+        self.assertGreater(purity, 0.999,
+                          f"Multi-gate circuit degraded purity to {purity}; should be ~1.0")
 
         
 if __name__ == '__main__':

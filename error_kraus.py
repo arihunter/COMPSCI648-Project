@@ -1,6 +1,7 @@
 from typing import List, Tuple, Dict
 import math
 import torch
+from constants import DEFAULT_GATE_DURATIONS
 
 # ============================================================
 # Notes on Realistic Superconducting Transmon Parameters
@@ -176,7 +177,7 @@ def add_time_based_noise(
     num_qubits: int,
     T1: float,
     T2: float,
-    gate_durations: Dict[str, float],
+    gate_durations: Dict[str, float] | None = None,
     gate_noise_fraction: float = 1.0,
 ) -> List[Tuple]:
     """
@@ -199,6 +200,9 @@ def add_time_based_noise(
     Returns:
         Extended circuit with T1T2_NOISE operations inserted.
     """
+    if gate_durations is None:
+        gate_durations = dict(DEFAULT_GATE_DURATIONS)
+    
     gate_noise_fraction = max(0.0, min(1.0, gate_noise_fraction))  # clamp to [0, 1]
     
     accounted_for_time = [0.0] * num_qubits
@@ -221,11 +225,12 @@ def add_time_based_noise(
             for q in acted_on:
                 if accounted_for_time[q] < max_time:
                     idle = max_time - accounted_for_time[q]
-                    if idle in relax_cache:
-                        λ1, λ2 = relax_cache[idle]
+                    cache_key = (idle, T1, T2)
+                    if cache_key in relax_cache:
+                        λ1, λ2 = relax_cache[cache_key]
                     else:
                         λ1, λ2 = thermal_relaxation_error_rate(T1, T2, idle)
-                        relax_cache[idle] = (λ1, λ2)
+                        relax_cache[cache_key] = (λ1, λ2)
                     if λ1 > 0.0 or λ2 > 0.0:
                         noisy_circuit.append(
                             ("T1T2_NOISE", [q], λ1, λ2, idle)
@@ -236,11 +241,12 @@ def add_time_based_noise(
         # This models T1/T2 relaxation that occurs even while a gate is applied
         if gate_noise_fraction > 0.0 and time_to_elapse > 0.0:
             noise_time = time_to_elapse * gate_noise_fraction
-            if noise_time in relax_cache:
-                λ1, λ2 = relax_cache[noise_time]
+            cache_key = (noise_time, T1, T2)
+            if cache_key in relax_cache:
+                λ1, λ2 = relax_cache[cache_key]
             else:
                 λ1, λ2 = thermal_relaxation_error_rate(T1, T2, noise_time)
-                relax_cache[noise_time] = (λ1, λ2)
+                relax_cache[cache_key] = (λ1, λ2)
             if λ1 > 0.0 or λ2 > 0.0:
                 for q in acted_on:
                     noisy_circuit.append(
@@ -257,11 +263,12 @@ def add_time_based_noise(
     for q in range(num_qubits):
         if accounted_for_time[q] < end_time:
             idle = end_time - accounted_for_time[q]
-            if idle in relax_cache:
-                λ1, λ2 = relax_cache[idle]
+            cache_key = (idle, T1, T2)
+            if cache_key in relax_cache:
+                λ1, λ2 = relax_cache[cache_key]
             else:
                 λ1, λ2 = thermal_relaxation_error_rate(T1, T2, idle)
-                relax_cache[idle] = (λ1, λ2)
+                relax_cache[cache_key] = (λ1, λ2)
             if λ1 > 0.0 or λ2 > 0.0:
                 noisy_circuit.append(
                     ("T1T2_NOISE", [q], λ1, λ2, idle)

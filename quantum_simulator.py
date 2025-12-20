@@ -279,50 +279,55 @@ def apply_single_qubit_gate_density(
 ) -> torch.Tensor:
     """
     Apply single-qubit unitary U to qubit q on density matrix.
-    ρ' = (U ⊗ I) ρ (U† ⊗ I), implemented via tensor contractions.
-    """
-    # Cache permutation orders to reduce Python overhead per gate application
-    key = (num_qubits, q)
-    if not hasattr(apply_single_qubit_gate_density, "_perm_cache"):
-        apply_single_qubit_gate_density._perm_cache = {}
-    perm_cache = apply_single_qubit_gate_density._perm_cache
+    # ρ' = (U ⊗ I) ρ (U† ⊗ I), implemented via tensor contractions.
+    # """
+    # # Cache permutation orders to reduce Python overhead per gate application
+    # key = (num_qubits, q)
+    # if not hasattr(apply_single_qubit_gate_density, "_perm_cache"):
+    #     apply_single_qubit_gate_density._perm_cache = {}
+    # perm_cache = apply_single_qubit_gate_density._perm_cache
 
-    if key in perm_cache:
-        row_order, final_order = perm_cache[key]
-    else:
-        remaining_rows = [i for i in range(num_qubits) if i != q]
-        row_order = []
-        for i in range(num_qubits):
-            if i == q:
-                row_order.append(0)  # U_out
-            else:
-                idx = remaining_rows.index(i)
-                row_order.append(1 + idx)
+    # if key in perm_cache:
+    #     row_order, final_order = perm_cache[key]
+    # else:
+    #     remaining_rows = [i for i in range(num_qubits) if i != q]
+    #     row_order = []
+    #     for i in range(num_qubits):
+    #         if i == q:
+    #             row_order.append(0)  # U_out
+    #         else:
+    #             idx = remaining_rows.index(i)
+    #             row_order.append(1 + idx)
 
-        remaining_cols = [i for i in range(num_qubits) if i != q]
-        final_order = list(range(1, 1 + num_qubits))  # rows stay in order
-        for i in range(num_qubits):
-            if i == q:
-                final_order.append(0)  # Uc_out
-            else:
-                idx = remaining_cols.index(i)
-                final_order.append(1 + num_qubits + idx)
+    #     remaining_cols = [i for i in range(num_qubits) if i != q]
+    #     final_order = list(range(1, 1 + num_qubits))  # rows stay in order
+    #     for i in range(num_qubits):
+    #         if i == q:
+    #             final_order.append(0)  # Uc_out
+    #         else:
+    #             idx = remaining_cols.index(i)
+    #             final_order.append(1 + num_qubits + idx)
 
-        perm_cache[key] = (row_order, final_order)
+    #     perm_cache[key] = (row_order, final_order)
 
-    # Reshape density into (row qubits, column qubits)
-    ρ = density.reshape([2]*num_qubits + [2]*num_qubits)
+    # # Reshape density into (row qubits, column qubits)
+    # ρ = density.reshape([2]*num_qubits + [2]*num_qubits)
 
-    # Left multiply on row axis q: contract U(in) with row[q]
-    tmp = torch.tensordot(U, ρ, dims=([1], [q]))  # U_out + row_rem + col
-    tmp = tmp.permute(row_order + list(range(num_qubits, num_qubits + num_qubits)))
+    # # Left multiply on row axis q: contract U(in) with row[q]
+    # tmp = torch.tensordot(U, ρ, dims=([1], [q]))  # U_out + row_rem + col
+    # tmp = tmp.permute(row_order + list(range(num_qubits, num_qubits + num_qubits)))
 
-    # Right multiply on column axis q
-    U_dag = U.conj().transpose(0, 1)
-    tmp2 = torch.tensordot(U_dag, tmp, dims=([1], [num_qubits + q]))  # Uc_out + row + col_rem
+    # # Right multiply on column axis q
+    # U_dag = U.conj().transpose(0, 1)
+    # tmp2 = torch.tensordot(U_dag, tmp, dims=([1], [num_qubits + q]))  # Uc_out + row + col_rem
 
-    ρ_final = tmp2.permute(final_order).reshape(2**num_qubits, 2**num_qubits)
-    return ρ_final
+    # ρ_final = tmp2.permute(final_order).reshape(2**num_qubits, 2**num_qubits)
+    # return ρ_final
+    # ρ' = (U ⊗ I) ρ (U† ⊗ I), via full unitary embedding for correctness.
+    # Build full unitary and apply via Kraus (known working path)
+    U_full = build_full_unitary(U, [q], num_qubits)
+    return kraus_operator(density, [(U_full, 1.0)])
+
 
 
 def apply_two_qubit_gate_density(
@@ -484,7 +489,7 @@ def run_noisy_circuit_density(
     num_qubits: int,
     T1: float,
     T2: float,
-    gate_durations: Dict[str, float],
+    gate_durations: Dict[str, float]| None = None,
     gate_noise_fraction: float = 1.0,
 ) -> torch.Tensor:
     """
@@ -504,6 +509,9 @@ def run_noisy_circuit_density(
     Output:
         density matrix ρ_final (2^n x 2^n)
     """
+    if gate_durations is None:
+        gate_durations = dict(DEFAULT_GATE_DURATIONS)
+        
     # Convert to density matrix
     density = state_to_density(initial_state)
 

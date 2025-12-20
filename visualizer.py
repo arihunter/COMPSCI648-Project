@@ -480,7 +480,8 @@ def plot_accuracy_vs_t1(noise_sweep_results, dataset_name, epochs=None, save=Fal
     ax.set_ylim(0, 1.05)
     
     # Use log scale for x-axis if range is large
-    if len(t1_values) > 1 and max(t1_values) / min(t1_values) > 10:
+    nonzero_t1 = [t for t in t1_values if t > 0]
+    if len(nonzero_t1) > 1 and max(nonzero_t1) / min(nonzero_t1) > 10:
         ax.set_xscale('log')
         ax.set_xlabel('T1 Relaxation Time (μs, log scale)', fontsize=12)
     
@@ -680,7 +681,25 @@ def plot_accuracy_vs_epoch(results, dataset, epochs, save=False, T1_filter=None)
         title += f" (T1={T1_filter} µs)"
     plt.title(title, fontsize=14, fontweight='bold')
     
-    plt.legend(loc='best', fontsize=9, framealpha=0.9)
+    # Improved legend: place outside plot, organized by model type
+    ax = plt.gca()
+    handles, labels = ax.get_legend_handles_labels()
+    
+    # Sort labels by model type for better organization
+    model_order = {'Deep VQC': 0, 'Noise-Aware QNN': 1, 'Quantum Kernel': 2}
+    def sort_key(item):
+        label = item[1]
+        for model_name, order in model_order.items():
+            if model_name in label:
+                return order
+        return 999
+    
+    sorted_items = sorted(zip(handles, labels), key=sort_key)
+    handles, labels = zip(*sorted_items) if sorted_items else ([], [])
+    
+    ax.legend(handles, labels, loc='upper left', bbox_to_anchor=(1.02, 1), 
+              fontsize=10, framealpha=0.95, edgecolor='black', title='Models',
+              title_fontsize=11)
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     
