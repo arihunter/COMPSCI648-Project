@@ -109,6 +109,22 @@ This generates a plot with **T1 (μs) on x-axis** and **Final Accuracy on y-axis
 - QNN Angle, QNN Amplitude  
 - Kernel Angle, Kernel Amplitude
 
+### Accuracy vs Epoch (Per-Model Lines)
+
+When running noise sweeps with `--plot`, the runner also saves per-epoch accuracy histories and generates accuracy-vs-epoch plots (kernel appears as a flat dashed line):
+
+```bash
+# Generate sweep + per-epoch history and plots
+python run_experiments.py --noise-sweep --epochs 100 --T1-values 50 100 200 --plot
+
+# Plot from a saved history CSV later (optional)
+python plot_existing_history.py --history-file data/noise_sweep_moons_ep100_<timestamp>_history.csv --dataset moons --save
+```
+
+Artifacts:
+- Data: `data/noise_sweep_<dataset>_ep<epochs>_<timestamp>_history.csv` (columns: model, encoding, T1, epoch, accuracy)
+- Plots: saved under `plots/` with filenames like `accuracy_vs_epoch_<dataset>_ep<epochs>_t1<T1>_<timestamp>.png`
+
 ## CLI Arguments
 
 | Arg | Default | Options | Description |
@@ -143,4 +159,19 @@ This generates a plot with **T1 (μs) on x-axis** and **Final Accuracy on y-axis
 pip install -e .
 ```
 
-Requires Python ≥3.8, PyTorch ≥2.0, NumPy, Matplotlib, scikit-learn.
+Requires Python 3.11, PyTorch ≥2.0, NumPy, Matplotlib, scikit-learn.
+
+## Environment Setup
+
+Use `uv` to create a local 3.11 environment (reads `pyproject.toml`):
+
+```bash
+uv sync
+source .venv/bin/activate
+```
+
+Or run without activating:
+
+```bash
+uv run python run_experiments.py --help
+```

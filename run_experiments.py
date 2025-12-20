@@ -370,6 +370,30 @@ def save_noise_sweep_csv(results, filepath):
             ])
 
 
+def save_per_epoch_history_csv(results, filepath):
+    """
+    Save per-epoch accuracy history for all models.
+    
+    Creates a CSV with columns: model, encoding, T1, epoch, accuracy
+    This format is ideal for plotting accuracy vs epoch with multiple models.
+    """
+    with open(filepath, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['model', 'encoding', 'T1', 'epoch', 'accuracy'])
+        
+        for r in results:
+            if 'acc_history' in r:
+                model_label = f"{r['model_type']}_{r['encoding']}"
+                for epoch_idx, acc in enumerate(r['acc_history']):
+                    writer.writerow([
+                        r['model_type'],
+                        r['encoding'],
+                        r['T1'],
+                        epoch_idx + 1,  # 1-indexed epochs
+                        f"{acc:.4f}"
+                    ])
+
+
 def run_unified_noise_sweep(epochs=25, dataset="moons", T1_values=None, T2_ratio=2.0):
     """
     Run ALL models (VQC, QNN, Kernel) across varying T1 noise levels.
@@ -424,16 +448,19 @@ def run_unified_noise_sweep(epochs=25, dataset="moons", T1_values=None, T2_ratio
                     if model_type == "kernel":
                         # Kernel: batch prediction with cached feature maps (fast!)
                         result = run_kernel_experiment(encoding, dataset, T1, T2)
+                        kernel_acc = result['metrics']['accuracy']
                         unified_result = {
                             'model_type': 'kernel',
                             'encoding': encoding.value,
                             'dataset': dataset,
                             'T1': T1,
                             'T2': T2,
-                            'accuracy': result['metrics']['accuracy'],
+                            'accuracy': kernel_acc,
                             'f1': result['metrics']['f1'],
                             'roc_auc': result['metrics']['roc_auc'],
-                            'epochs': 0
+                            'epochs': 0,
+                            'acc_history': [kernel_acc] * epochs,  # Flat line for kernel
+                            'loss_history': [0.0] * epochs  # No loss for kernel
                         }
                     else:
                         # Train VQC or QNN
@@ -460,7 +487,9 @@ def run_unified_noise_sweep(epochs=25, dataset="moons", T1_values=None, T2_ratio
                             'accuracy': metrics['acc_history'][-1],
                             'f1': metrics['final_metrics']['f1'],
                             'roc_auc': metrics['final_metrics']['roc_auc'],
-                            'epochs': epochs
+                            'epochs': epochs,
+                            'acc_history': metrics['acc_history'],  # Save per-epoch accuracy
+                            'loss_history': metrics['loss_history']  # Save per-epoch loss
                         }
                     
                     all_results.append(unified_result)
@@ -472,11 +501,19 @@ def run_unified_noise_sweep(epochs=25, dataset="moons", T1_values=None, T2_ratio
     
     # Save results
     if all_results:
+        # Save summary CSV
         filename = f"noise_sweep_{dataset}_ep{epochs}_{timestamp}.csv"
         filepath = os.path.join(data_dir, filename)
         save_noise_sweep_csv(all_results, filepath)
+        
+        # Save per-epoch history CSV
+        history_filename = f"noise_sweep_{dataset}_ep{epochs}_{timestamp}_history.csv"
+        history_filepath = os.path.join(data_dir, history_filename)
+        save_per_epoch_history_csv(all_results, history_filepath)
+        
         print(f"\n{'='*60}")
         print(f"Noise sweep results saved: {filename}")
+        print(f"Per-epoch history saved: {history_filename}")
         print(f"Total successful runs: {len(all_results)}/{total_runs}")
         print(f"{'='*60}\n")
     
@@ -659,12 +696,19 @@ def main():
         
         # Plot noise sweep results
         if args.plot and noise_sweep_results:
-            from visualizer import plot_accuracy_vs_t1
+            from visualizer import plot_accuracy_vs_t1, plot_accuracy_vs_epoch
             for dataset in datasets_to_run:
                 dataset_results = [r for r in noise_sweep_results if r['dataset'] == dataset]
                 if dataset_results:
+                    # Plot final accuracy vs T1
                     plot_accuracy_vs_t1(dataset_results, dataset, 
                                        epochs=args.epochs, save=True)
+                    
+                    # Plot accuracy vs epoch for each T1 value
+                    T1_values = sorted(set(r['T1'] for r in dataset_results))
+                    for T1 in T1_values:
+                        plot_accuracy_vs_epoch(dataset_results, dataset, 
+                                             epochs=args.epochs, save=True, T1_filter=T1)
         
         return results, kernel_results, noise_sweep_results
     

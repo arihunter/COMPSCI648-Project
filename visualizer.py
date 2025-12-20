@@ -604,6 +604,100 @@ def plot_measurement_comparison(normal_counts, kraus_counts, title="Measurement 
     plt.tight_layout()
     plt.show()
 
+
+def plot_accuracy_vs_epoch(results, dataset, epochs, save=False, T1_filter=None):
+    """
+    Plot accuracy vs epoch for all models (including flat lines for kernel models).
+    
+    Args:
+        results: List of result dicts from run_unified_noise_sweep with 'acc_history'
+        dataset: Dataset name for title
+        epochs: Number of epochs
+        save: If True, save plot to file
+        T1_filter: Optional T1 value to filter results (plot only specific T1)
+    
+    Returns:
+        Filepath if save=True, else None
+    """
+    if not results:
+        print(f"No noise sweep results found for dataset: {dataset}")
+        return None
+    
+    # Filter by T1 if specified
+    if T1_filter is not None:
+        results = [r for r in results if r.get('T1') == T1_filter]
+        if not results:
+            print(f"No results found for T1={T1_filter}")
+            return None
+    
+    plt.figure(figsize=(12, 7))
+    
+    # Color and style mapping
+    model_colors = {
+        'deep_vqc': {'angle': 'blue', 'amplitude': 'dodgerblue'},
+        'noise_aware': {'angle': 'red', 'amplitude': 'salmon'},
+        'kernel': {'angle': 'green', 'amplitude': 'limegreen'}
+    }
+    
+    model_names = {
+        'deep_vqc': 'Deep VQC',
+        'noise_aware': 'Noise-Aware QNN',
+        'kernel': 'Quantum Kernel'
+    }
+    
+    # Plot each model's accuracy history
+    for result in results:
+        if 'acc_history' not in result:
+            continue
+        
+        model_type = result['model_type']
+        encoding = result['encoding']
+        T1 = result.get('T1', 'N/A')
+        
+        acc_history = result['acc_history']
+        epoch_range = range(1, len(acc_history) + 1)
+        
+        # Create label
+        label = f"{model_names.get(model_type, model_type)} ({encoding})"
+        if T1_filter is None:
+            label += f" T1={T1}"
+        
+        # Get color
+        color = model_colors.get(model_type, {}).get(encoding, 'gray')
+        
+        # Line style (solid for trainable, dashed for kernel)
+        linestyle = '--' if model_type == 'kernel' else '-'
+        linewidth = 2 if model_type == 'kernel' else 1.5
+        
+        plt.plot(epoch_range, acc_history, label=label, color=color, 
+                linestyle=linestyle, linewidth=linewidth, marker='o', markersize=3, alpha=0.8)
+    
+    plt.xlabel("Epoch", fontsize=12)
+    plt.ylabel("Test Accuracy", fontsize=12)
+    
+    title = f"Model Accuracy vs Epoch - {dataset.capitalize()} Dataset"
+    if T1_filter is not None:
+        title += f" (T1={T1_filter} µs)"
+    plt.title(title, fontsize=14, fontweight='bold')
+    
+    plt.legend(loc='best', fontsize=9, framealpha=0.9)
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    
+    if save:
+        plots_dir = ensure_plots_dir()
+        timestamp = datetime.now().strftime("%d_%H%M")
+        t1_suffix = f"_t1{T1_filter}" if T1_filter else "_all_t1"
+        filename = f"accuracy_vs_epoch_{dataset}_ep{epochs}{t1_suffix}_{timestamp}.png"
+        filepath = os.path.join(plots_dir, filename)
+        plt.savefig(filepath, dpi=300, bbox_inches='tight')
+        print(f"Plot saved: {filepath}")
+        return filepath
+    else:
+        plt.show()
+        return None
+
+
 # # Example usage with your sample (pretend it's from one of the simulators)
 # normal_counts = {'00011': 33, '11010': 57, '11101': 73, '01101': 19, '11111': 108,
 #                  '10010': 84, '10100': 22, '10111': 56, '11001': 33, '01000': 34,
