@@ -176,6 +176,408 @@ def plot_model_comparison(data_dict, dataset_name="", title=None,
     plt.show()
 
 
+def plot_kernel_comparison(kernel_results, dataset_name, save=False, T1=None, T2=None):
+    """
+    Plot kernel model performance comparison across encodings.
+    
+    Args:
+        kernel_results: List of kernel result dicts
+        dataset_name: Dataset to filter for
+        save: If True, save plot to plots/ directory
+        T1: T1 noise parameter (for filename)
+        T2: T2 noise parameter (for filename)
+    """
+    # Filter results for this dataset
+    filtered = [r for r in kernel_results if r['dataset'] == dataset_name]
+    
+    if not filtered:
+        print(f"No kernel results found for dataset: {dataset_name}")
+        return
+    
+    # Group by encoding
+    encodings = []
+    accuracies = []
+    f1_scores = []
+    labels = []
+    
+    for r in filtered:
+        enc = r['encoding']
+        noise_label = f"T1={r['T1']}" if r['T1'] != 'noiseless' else "Noiseless"
+        labels.append(f"{enc.capitalize()}\n({noise_label})")
+        accuracies.append(r['metrics']['accuracy'])
+        f1_scores.append(r['metrics']['f1'])
+    
+    x = np.arange(len(labels))
+    width = 0.35
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
+    bars1 = ax.bar(x - width/2, accuracies, width, label='Accuracy', color='#1f77b4')
+    bars2 = ax.bar(x + width/2, f1_scores, width, label='F1 Score', color='#ff7f0e')
+    
+    ax.set_ylabel('Score')
+    ax.set_title(f'{dataset_name.capitalize()} Dataset - Quantum Kernel Model Performance')
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels)
+    ax.legend()
+    ax.set_ylim(0, 1.1)
+    ax.grid(True, alpha=0.3, axis='y')
+    
+    # Add value labels on bars
+    for bar in bars1:
+        height = bar.get_height()
+        ax.annotate(f'{height:.3f}',
+                    xy=(bar.get_x() + bar.get_width() / 2, height),
+                    xytext=(0, 3), textcoords="offset points",
+                    ha='center', va='bottom', fontsize=8)
+    for bar in bars2:
+        height = bar.get_height()
+        ax.annotate(f'{height:.3f}',
+                    xy=(bar.get_x() + bar.get_width() / 2, height),
+                    xytext=(0, 3), textcoords="offset points",
+                    ha='center', va='bottom', fontsize=8)
+    
+    plt.tight_layout()
+    
+    if save:
+        plots_dir = ensure_plots_dir()
+        timestamp = datetime.now().strftime("%d_%H%M")
+        t1_str = f"_t1{int(T1)}" if T1 is not None else "_noiseless"
+        t2_str = f"_t2{int(T2)}" if T2 is not None else ""
+        filename = f"kernel_{dataset_name}{t1_str}{t2_str}_{timestamp}.png"
+        filepath = os.path.join(plots_dir, filename)
+        plt.savefig(filepath, dpi=150, bbox_inches='tight')
+        print(f"  Kernel plot saved: {filename}")
+    
+    plt.show()
+
+
+def plot_kernel_noise_sweep(kernel_results, dataset_name, save=False):
+    """
+    Plot kernel accuracy vs noise level (T1 values).
+    
+    Args:
+        kernel_results: List of kernel result dicts from noise sweep
+        dataset_name: Dataset to filter for
+        save: If True, save plot to plots/ directory
+    """
+    # Filter results for this dataset
+    filtered = [r for r in kernel_results if r['dataset'] == dataset_name]
+    
+    if not filtered:
+        print(f"No kernel results found for dataset: {dataset_name}")
+        return
+    
+    # Separate by encoding
+    angle_results = [r for r in filtered if r['encoding'] == 'angle']
+    amp_results = [r for r in filtered if r['encoding'] == 'amplitude']
+    
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    
+    for ax, enc_results, enc_name in [(axes[0], angle_results, 'Angle'), 
+                                        (axes[1], amp_results, 'Amplitude')]:
+        if not enc_results:
+            ax.set_title(f'{enc_name} Encoding - No Data')
+            continue
+        
+        # Sort by T1 (put noiseless first)
+        t1_values = []
+        accuracies = []
+        f1_scores = []
+        
+        for r in sorted(enc_results, key=lambda x: float('inf') if x['T1'] == 'noiseless' else x['T1']):
+            t1_label = 'Noiseless' if r['T1'] == 'noiseless' else f"{r['T1']}"
+            t1_values.append(t1_label)
+            accuracies.append(r['metrics']['accuracy'])
+            f1_scores.append(r['metrics']['f1'])
+        
+        x = np.arange(len(t1_values))
+        width = 0.35
+        
+        bars1 = ax.bar(x - width/2, accuracies, width, label='Accuracy', color='#2ca02c')
+        bars2 = ax.bar(x + width/2, f1_scores, width, label='F1 Score', color='#d62728')
+        
+        ax.set_xlabel('T1 (μs)')
+        ax.set_ylabel('Score')
+        ax.set_title(f'{dataset_name.capitalize()} - Kernel {enc_name} Encoding')
+        ax.set_xticks(x)
+        ax.set_xticklabels(t1_values)
+        ax.legend()
+        ax.set_ylim(0, 1.1)
+        ax.grid(True, alpha=0.3, axis='y')
+        
+        # Add value labels
+        for bar in bars1:
+            height = bar.get_height()
+            ax.annotate(f'{height:.2f}',
+                        xy=(bar.get_x() + bar.get_width() / 2, height),
+                        xytext=(0, 3), textcoords="offset points",
+                        ha='center', va='bottom', fontsize=7)
+    
+    plt.tight_layout()
+    
+    if save:
+        plots_dir = ensure_plots_dir()
+        timestamp = datetime.now().strftime("%d_%H%M")
+        filename = f"kernel_noise_sweep_{dataset_name}_{timestamp}.png"
+        filepath = os.path.join(plots_dir, filename)
+        plt.savefig(filepath, dpi=150, bbox_inches='tight')
+        print(f"  Kernel noise sweep plot saved: {filename}")
+    
+    plt.show()
+
+
+def plot_all_models_comparison(training_results, kernel_results, dataset_name, 
+                                save=False, T1=None, T2=None, epochs=None):
+    """
+    Plot comparison of all models (VQC, QNN, Kernel) on same chart.
+    
+    Args:
+        training_results: List of training result dicts (VQC, QNN)
+        kernel_results: List of kernel result dicts
+        dataset_name: Dataset to filter for
+        save: If True, save plot
+    """
+    # Get final accuracies from training results
+    model_scores = {}
+    
+    for r in training_results:
+        if r['dataset'] != dataset_name:
+            continue
+        model = r['model_type']
+        encoding = r['encoding']
+        label = f"{'VQC' if model == 'deep_vqc' else 'QNN'} {encoding.capitalize()}"
+        model_scores[label] = {
+            'accuracy': r['acc_history'][-1],
+            'f1': r['final_metrics']['f1']
+        }
+    
+    # Add kernel results
+    for r in kernel_results:
+        if r['dataset'] != dataset_name:
+            continue
+        label = f"Kernel {r['encoding'].capitalize()}"
+        model_scores[label] = {
+            'accuracy': r['metrics']['accuracy'],
+            'f1': r['metrics']['f1']
+        }
+    
+    if not model_scores:
+        print(f"No results found for dataset: {dataset_name}")
+        return
+    
+    labels = list(model_scores.keys())
+    accuracies = [model_scores[l]['accuracy'] for l in labels]
+    f1_scores = [model_scores[l]['f1'] for l in labels]
+    
+    x = np.arange(len(labels))
+    width = 0.35
+    
+    fig, ax = plt.subplots(figsize=(12, 6))
+    
+    colors_acc = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
+    colors_f1 = ['#aec7e8', '#ffbb78', '#98df8a', '#ff9896', '#c5b0d5', '#c49c94']
+    
+    bars1 = ax.bar(x - width/2, accuracies, width, label='Accuracy', color=colors_acc[:len(labels)])
+    bars2 = ax.bar(x + width/2, f1_scores, width, label='F1 Score', color=colors_f1[:len(labels)])
+    
+    ax.set_ylabel('Score')
+    ax.set_title(f'{dataset_name.capitalize()} Dataset - All Models Comparison')
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=15, ha='right')
+    ax.legend()
+    ax.set_ylim(0, 1.15)
+    ax.grid(True, alpha=0.3, axis='y')
+    
+    # Add value labels
+    for bar in bars1:
+        height = bar.get_height()
+        ax.annotate(f'{height:.3f}',
+                    xy=(bar.get_x() + bar.get_width() / 2, height),
+                    xytext=(0, 3), textcoords="offset points",
+                    ha='center', va='bottom', fontsize=8)
+    
+    plt.tight_layout()
+    
+    if save:
+        plots_dir = ensure_plots_dir()
+        timestamp = datetime.now().strftime("%d_%H%M")
+        t1_str = f"_t1{int(T1)}" if T1 is not None else ""
+        t2_str = f"_t2{int(T2)}" if T2 is not None else ""
+        ep_str = f"_ep{epochs}" if epochs is not None else ""
+        filename = f"all_models_{dataset_name}{t1_str}{t2_str}{ep_str}_{timestamp}.png"
+        filepath = os.path.join(plots_dir, filename)
+        plt.savefig(filepath, dpi=150, bbox_inches='tight')
+        print(f"  All models comparison plot saved: {filename}")
+    
+    plt.show()
+
+
+def plot_accuracy_vs_t1(noise_sweep_results, dataset_name, epochs=None, save=False):
+    """
+    Plot Final Accuracy vs T1 for all models and encodings.
+    
+    This is the main comparison plot showing how each model/encoding combination
+    performs under varying noise levels (T1 relaxation time).
+    
+    Args:
+        noise_sweep_results: List of result dicts from run_unified_noise_sweep
+                            Each dict has: model_type, encoding, dataset, T1, T2, accuracy, f1, roc_auc
+        dataset_name: Dataset to filter for
+        epochs: Number of epochs used (for title/filename)
+        save: If True, save plot to plots/ directory
+    
+    Returns:
+        filepath if saved, None otherwise
+    """
+    # Filter results for this dataset
+    filtered = [r for r in noise_sweep_results if r['dataset'] == dataset_name]
+    
+    if not filtered:
+        print(f"No noise sweep results found for dataset: {dataset_name}")
+        return None
+    
+    # Get unique T1 values and sort them
+    t1_values = sorted(set(r['T1'] for r in filtered))
+    
+    # Define model/encoding combinations and their display properties
+    configurations = [
+        ('deep_vqc', 'angle', 'VQC Angle', '#1f77b4', 'o', '-'),
+        ('deep_vqc', 'amplitude', 'VQC Amplitude', '#ff7f0e', 's', '-'),
+        ('noise_aware', 'angle', 'QNN Angle', '#2ca02c', '^', '-'),
+        ('noise_aware', 'amplitude', 'QNN Amplitude', '#d62728', 'd', '-'),
+        ('kernel', 'angle', 'Kernel Angle', '#9467bd', 'v', '--'),
+        ('kernel', 'amplitude', 'Kernel Amplitude', '#8c564b', 'p', '--'),
+    ]
+    
+    fig, ax = plt.subplots(figsize=(12, 7))
+    
+    for model_type, encoding, label, color, marker, linestyle in configurations:
+        # Get accuracies for this configuration at each T1
+        config_results = [r for r in filtered 
+                         if r['model_type'] == model_type and r['encoding'] == encoding]
+        
+        if not config_results:
+            continue
+        
+        # Sort by T1 and extract values
+        config_results.sort(key=lambda x: x['T1'])
+        x_vals = [r['T1'] for r in config_results]
+        y_vals = [r['accuracy'] for r in config_results]
+        
+        ax.plot(x_vals, y_vals, label=label, color=color, marker=marker, 
+                linestyle=linestyle, linewidth=2, markersize=8)
+    
+    # Formatting
+    ax.set_xlabel('T1 Relaxation Time (μs)', fontsize=12)
+    ax.set_ylabel('Final Accuracy', fontsize=12)
+    
+    epoch_str = f" ({epochs} epochs)" if epochs else ""
+    ax.set_title(f'{dataset_name.capitalize()} Dataset - Accuracy vs Noise Level{epoch_str}', 
+                 fontsize=14)
+    
+    ax.legend(loc='best', fontsize=10)
+    ax.grid(True, alpha=0.3)
+    ax.set_ylim(0, 1.05)
+    
+    # Use log scale for x-axis if range is large
+    if len(t1_values) > 1 and max(t1_values) / min(t1_values) > 10:
+        ax.set_xscale('log')
+        ax.set_xlabel('T1 Relaxation Time (μs, log scale)', fontsize=12)
+    
+    plt.tight_layout()
+    
+    filepath = None
+    if save:
+        plots_dir = ensure_plots_dir()
+        timestamp = datetime.now().strftime("%d_%H%M")
+        ep_str = f"_ep{epochs}" if epochs else ""
+        filename = f"accuracy_vs_t1_{dataset_name}{ep_str}_{timestamp}.png"
+        filepath = os.path.join(plots_dir, filename)
+        plt.savefig(filepath, dpi=150, bbox_inches='tight')
+        print(f"  Accuracy vs T1 plot saved: {filename}")
+    
+    plt.show()
+    return filepath
+
+
+def plot_accuracy_vs_t1_dual(noise_sweep_results, epochs=None, save=False):
+    """
+    Plot Final Accuracy vs T1 for both datasets side by side.
+    
+    Args:
+        noise_sweep_results: List of result dicts from run_unified_noise_sweep
+        epochs: Number of epochs used (for title/filename)
+        save: If True, save plot to plots/ directory
+    
+    Returns:
+        filepath if saved, None otherwise
+    """
+    datasets = ['moons', 'real']
+    
+    # Define model/encoding combinations and their display properties
+    configurations = [
+        ('deep_vqc', 'angle', 'VQC Angle', '#1f77b4', 'o', '-'),
+        ('deep_vqc', 'amplitude', 'VQC Amp', '#ff7f0e', 's', '-'),
+        ('noise_aware', 'angle', 'QNN Angle', '#2ca02c', '^', '-'),
+        ('noise_aware', 'amplitude', 'QNN Amp', '#d62728', 'd', '-'),
+        ('kernel', 'angle', 'Kernel Angle', '#9467bd', 'v', '--'),
+        ('kernel', 'amplitude', 'Kernel Amp', '#8c564b', 'p', '--'),
+    ]
+    
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+    
+    for ax, dataset_name in zip(axes, datasets):
+        filtered = [r for r in noise_sweep_results if r['dataset'] == dataset_name]
+        
+        if not filtered:
+            ax.set_title(f'{dataset_name.capitalize()} - No Data')
+            continue
+        
+        t1_values = sorted(set(r['T1'] for r in filtered))
+        
+        for model_type, encoding, label, color, marker, linestyle in configurations:
+            config_results = [r for r in filtered 
+                             if r['model_type'] == model_type and r['encoding'] == encoding]
+            
+            if not config_results:
+                continue
+            
+            config_results.sort(key=lambda x: x['T1'])
+            x_vals = [r['T1'] for r in config_results]
+            y_vals = [r['accuracy'] for r in config_results]
+            
+            ax.plot(x_vals, y_vals, label=label, color=color, marker=marker, 
+                    linestyle=linestyle, linewidth=2, markersize=7)
+        
+        ax.set_xlabel('T1 (μs)', fontsize=11)
+        ax.set_ylabel('Final Accuracy', fontsize=11)
+        ax.set_title(f'{dataset_name.capitalize()} Dataset', fontsize=12)
+        ax.legend(loc='best', fontsize=9)
+        ax.grid(True, alpha=0.3)
+        ax.set_ylim(0, 1.05)
+        
+        if len(t1_values) > 1 and max(t1_values) / min(t1_values) > 10:
+            ax.set_xscale('log')
+    
+    epoch_str = f" ({epochs} epochs)" if epochs else ""
+    fig.suptitle(f'Model Performance vs Noise Level{epoch_str}', fontsize=14, y=1.02)
+    
+    plt.tight_layout()
+    
+    filepath = None
+    if save:
+        plots_dir = ensure_plots_dir()
+        timestamp = datetime.now().strftime("%d_%H%M")
+        ep_str = f"_ep{epochs}" if epochs else ""
+        filename = f"accuracy_vs_t1_comparison{ep_str}_{timestamp}.png"
+        filepath = os.path.join(plots_dir, filename)
+        plt.savefig(filepath, dpi=150, bbox_inches='tight')
+        print(f"  Dual dataset accuracy vs T1 plot saved: {filename}")
+    
+    plt.show()
+    return filepath
+
+
 def plot_measurement_comparison(normal_counts, kraus_counts, title="Measurement comparison"):
     # All bitstrings that appear in either result
     all_bits = sorted(set(normal_counts.keys()) | set(kraus_counts.keys()))

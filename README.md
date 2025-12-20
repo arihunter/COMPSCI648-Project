@@ -40,10 +40,14 @@ T1/T2 thermal relaxation applied after each gate:
 
 **Noise-Aware VQC**: Same architecture, trained with simulated T1/T2 noise using density matrix evolution.
 
+**Quantum Kernel**: Feature-map based classifier using quantum state overlap. No gradient-based training—predicts labels via kernel sum against training set. Useful for comparing encoding methods under varying noise.
+
 ## Usage
 
+### Trainable Models (VQC, Noise-Aware QNN)
+
 ```bash
-# Default run
+# Default run (all models, all encodings, all datasets)
 python run_experiments.py
 
 # Custom parameters
@@ -53,15 +57,76 @@ python run_experiments.py --epochs 50 --T1 50 --T2 100
 python run_experiments.py --models deep_vqc --encodings angle --datasets moons --plot
 ```
 
-| Arg | Default | Options |
-|-----|---------|---------|
-| `--epochs` | 25 | |
-| `--T1` | 100 | T1 relaxation (μs) |
-| `--T2` | 200 | T2 dephasing (μs) |
-| `--models` | all | `deep_vqc`, `noise_aware` |
-| `--encodings` | all | `angle`, `amplitude` |
-| `--datasets` | all | `real`, `moons` |
-| `--plot` | off | Save comparison plots |
+### Quantum Kernel Model
+
+```bash
+# Run kernel with default noise parameters
+python run_experiments.py --kernel
+
+# Run kernel without noise (noiseless simulation)
+python run_experiments.py --kernel-noiseless
+
+# Run kernel with noise sweep (tests T1 = 25, 50, 100, 200, 500 μs)
+python run_experiments.py --kernel-noise-sweep --plot
+
+# Run kernel for specific encoding/dataset
+python run_experiments.py --kernel --encodings angle --datasets moons
+
+# Compare kernel results with plots
+python run_experiments.py --kernel --kernel-compare
+```
+
+### Combined Runs
+
+```bash
+# Run all models including kernel
+python run_experiments.py --models deep_vqc noise_aware kernel --plot
+
+# Run specific models with kernel
+python run_experiments.py --models kernel noise_aware --encodings angle --datasets moons
+```
+
+### Unified Noise Sweep (Accuracy vs T1 Plot)
+
+Run all models (VQC, QNN, Kernel) across varying T1 noise levels and generate comparison plots:
+
+```bash
+# Run noise sweep with default T1 values (25, 50, 100, 200, 500 μs)
+python run_experiments.py --noise-sweep --plot
+
+# Custom T1 values and epochs
+python run_experiments.py --noise-sweep --epochs 10 --T1-values 50 100 200 --plot
+
+# Noise sweep on specific dataset
+python run_experiments.py --noise-sweep --datasets moons --epochs 25 --plot
+
+# Custom T2/T1 ratio (default is 2.0)
+python run_experiments.py --noise-sweep --T2-ratio 1.5 --plot
+```
+
+This generates a plot with **T1 (μs) on x-axis** and **Final Accuracy on y-axis** for all 6 configurations:
+- VQC Angle, VQC Amplitude
+- QNN Angle, QNN Amplitude  
+- Kernel Angle, Kernel Amplitude
+
+## CLI Arguments
+
+| Arg | Default | Options | Description |
+|-----|---------|---------|-------------|
+| `--epochs` | 25 | int | Training epochs for VQC/QNN |
+| `--T1` | 100 | float | T1 relaxation (μs) |
+| `--T2` | 200 | float | T2 dephasing (μs) |
+| `--models` | all | `deep_vqc`, `noise_aware`, `kernel` | Models to run |
+| `--encodings` | all | `angle`, `amplitude` | Encoding methods |
+| `--datasets` | all | `real`, `moons` | Datasets to use |
+| `--plot` | off | flag | Save comparison plots |
+| `--kernel` | off | flag | Run kernel experiments |
+| `--kernel-noiseless` | off | flag | Run kernel without noise |
+| `--kernel-noise-sweep` | off | flag | Run kernel with varying noise levels |
+| `--kernel-compare` | off | flag | Plot kernel comparison charts |
+| `--noise-sweep` | off | flag | Run all models with varying T1 values |
+| `--T1-values` | 25 50 100 200 500 | floats | T1 values (μs) for noise sweep |
+| `--T2-ratio` | 2.0 | float | T2/T1 ratio for noise sweep |
 
 ## Datasets
 

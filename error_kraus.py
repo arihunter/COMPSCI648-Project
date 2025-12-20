@@ -203,6 +203,7 @@ def add_time_based_noise(
     
     accounted_for_time = [0.0] * num_qubits
     noisy_circuit: List[Tuple] = []
+    relax_cache: Dict[float, Tuple[float, float]] = {}
 
     for op in circuit:
         name = op[0]
@@ -220,7 +221,11 @@ def add_time_based_noise(
             for q in acted_on:
                 if accounted_for_time[q] < max_time:
                     idle = max_time - accounted_for_time[q]
-                    λ1, λ2 = thermal_relaxation_error_rate(T1, T2, idle)
+                    if idle in relax_cache:
+                        λ1, λ2 = relax_cache[idle]
+                    else:
+                        λ1, λ2 = thermal_relaxation_error_rate(T1, T2, idle)
+                        relax_cache[idle] = (λ1, λ2)
                     if λ1 > 0.0 or λ2 > 0.0:
                         noisy_circuit.append(
                             ("T1T2_NOISE", [q], λ1, λ2, idle)
@@ -231,9 +236,13 @@ def add_time_based_noise(
         # This models T1/T2 relaxation that occurs even while a gate is applied
         if gate_noise_fraction > 0.0 and time_to_elapse > 0.0:
             noise_time = time_to_elapse * gate_noise_fraction
-            for q in acted_on:
+            if noise_time in relax_cache:
+                λ1, λ2 = relax_cache[noise_time]
+            else:
                 λ1, λ2 = thermal_relaxation_error_rate(T1, T2, noise_time)
-                if λ1 > 0.0 or λ2 > 0.0:
+                relax_cache[noise_time] = (λ1, λ2)
+            if λ1 > 0.0 or λ2 > 0.0:
+                for q in acted_on:
                     noisy_circuit.append(
                         ("T1T2_NOISE", [q], λ1, λ2, noise_time)
                     )
@@ -248,7 +257,11 @@ def add_time_based_noise(
     for q in range(num_qubits):
         if accounted_for_time[q] < end_time:
             idle = end_time - accounted_for_time[q]
-            λ1, λ2 = thermal_relaxation_error_rate(T1, T2, idle)
+            if idle in relax_cache:
+                λ1, λ2 = relax_cache[idle]
+            else:
+                λ1, λ2 = thermal_relaxation_error_rate(T1, T2, idle)
+                relax_cache[idle] = (λ1, λ2)
             if λ1 > 0.0 or λ2 > 0.0:
                 noisy_circuit.append(
                     ("T1T2_NOISE", [q], λ1, λ2, idle)
