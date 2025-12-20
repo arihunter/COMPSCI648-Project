@@ -2,6 +2,7 @@ from PIL.Image import new
 from locale import str
 import torch
 import math
+from constants import DEFAULT_GATE_DURATIONS, DEFAULT_T1, DEFAULT_T2
 from error_kraus import *
 from visualizer import plot_measurement_comparison
 # ───────────────────────────────────────────────────────────────
@@ -303,28 +304,28 @@ def apply_T1T2_noise_op(
     num_qubits: int,
 ) -> torch.Tensor:
     """
-    noise_op = ("T1T2_NOISE", [q], λ1, λ2, idle_time)
-
-    Corrected version: applies amplitude damping and phase damping
-    as two *composed* channels, not as a single concatenated Kraus set.
-    This keeps the map trace-preserving.
+    Apply T1 (amplitude damping) and T_φ (pure dephasing) channels.
+    noise_op = ("T1T2_NOISE", [q], λ1, λ_φ, idle_time)
+    
+    Applies: (1) amplitude damping, then (2) pure dephasing.
+    Keeps the map trace-preserving.
     """
-    _, qubits, λ1, λ2, _ = noise_op
+    _, qubits, λ1, λ_φ, _ = noise_op
     q = qubits[0]
 
-    # 1) Amplitude damping (T1 part)
+    # 1) Amplitude damping (T1: |1⟩ → |0⟩ relaxation)
     if λ1 > 0.0:
-        amp_kraus = amplitude_damping_kraus(λ1)            # single-qubit {E_i}
-        amp_full  = embed_single_qubit_kraus(amp_kraus, q, num_qubits)  # {E_i^full}
+        amp_kraus = amplitude_damping_kraus(λ1)
+        amp_full  = embed_single_qubit_kraus(amp_kraus, q, num_qubits)
         amp_ops_probs = make_operations_probs_from_kraus(amp_full)
-        density = kraus_operator(density, amp_ops_probs)   # ρ ← Σ_i E_i ρ E_i†
+        density = kraus_operator(density, amp_ops_probs)
 
-    # 2) Pure dephasing (Tφ part)
-    if λ2 > 0.0:
-        deph_kraus = phase_damping_kraus(λ2)               # single-qubit {F_j}
+    # 2) Pure dephasing (T_φ: coherence loss from 1/T2 - 1/(2T1))
+    if λ_φ > 0.0:
+        deph_kraus = phase_damping_kraus(λ_φ)
         deph_full  = embed_single_qubit_kraus(deph_kraus, q, num_qubits)
         deph_ops_probs = make_operations_probs_from_kraus(deph_full)
-        density = kraus_operator(density, deph_ops_probs)  # ρ ← Σ_j F_j ρ F_j†
+        density = kraus_operator(density, deph_ops_probs)
 
     return density
 
@@ -339,16 +340,21 @@ def run_noisy_circuit_density(
     T1: float,
     T2: float,
     gate_durations: Dict[str, float],
+    gate_noise_fraction: float = 1.0,
 ) -> torch.Tensor:
     """
     Execute a circuit with T1/T2 time-based idle noise, in the density-matrix picture.
+
+    UNITS: All time quantities (T1, T2, gate_durations) must be in MICROSECONDS (μs).
 
     Inputs:
         initial_state : state vector (length 2^n)
         circuit       : [(gate_name, [qubits]), ...]
         num_qubits    : number of qubits
-        T1, T2        : relaxation times
-        gate_durations: map gate_name -> duration
+        T1, T2        : relaxation times (μs)
+        gate_durations: map gate_name -> duration (μs)
+        gate_noise_fraction: fraction of gate time to add as simulated constant
+            decoherence noise (0.0 to 1.0). Models T1/T2 relaxation during gates.
 
     Output:
         density matrix ρ_final (2^n x 2^n)
@@ -365,6 +371,7 @@ def run_noisy_circuit_density(
             T1=T1,
             T2=T2,
             gate_durations=gate_durations,
+            gate_noise_fraction=gate_noise_fraction,
         )
 
     # Optional cache for full unitaries
@@ -415,14 +422,11 @@ if __name__ == "__main__":
         ("CNOT",[0,1]),
     ]
 
-    # simple uniform durations
-    gate_durations ={
-        "H":    1,
-        "CNOT": 1,
-    }
+    # Realistic gate durations (all times in μs) for superconducting transmons
+    gate_durations = dict(DEFAULT_GATE_DURATIONS)
 
-    T1 = 10
-    T2 = 20
+    T1 = DEFAULT_T1  # μs
+    T2 = 120.0  # μs
 
     # compare normal to kraus result
     ρ_final_normal = run_noisy_circuit_density(

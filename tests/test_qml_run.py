@@ -55,7 +55,6 @@ class TestSequentialQMLRun(unittest.TestCase):
         self.assertTrue(torch.is_tensor(pred))
         self.assertEqual(pred.numel(), 1)
 
-
 class TestAllConfigurationsTraining(unittest.TestCase):
     """Test training with 2 epochs for all configurations."""
     
