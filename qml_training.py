@@ -4,6 +4,8 @@ import math
 import random
 from enum import Enum
 
+from constants import DEFAULT_GATE_DURATIONS, DEFAULT_T1, DEFAULT_T2
+
 DEBUG = False
 
 class EncodingType(Enum):
@@ -35,6 +37,7 @@ from sklearn.model_selection import train_test_split
 # Dataset (REAL-WORLD)
 # ============================================================
 def make_real_dataset(test_size=0.3, seed=42, encoding=EncodingType.ANGLE):
+    """Load breast-cancer data, map labels to {-1,+1}, and return train/test splits for the chosen encoding."""
     data = load_breast_cancer()
     X = data.data
     y = data.target
@@ -124,27 +127,33 @@ def make_moons_dataset(test_size=0.3, seed=42, noise=0.15, encoding=EncodingType
 # Metrics
 # ============================================================
 def binary_predictions(scores):
+    """Convert real-valued scores to {-1,+1} labels."""
     return torch.where(scores >= 0, 1.0, -1.0)
 
 def accuracy(y_true, y_pred):
+    """Binary accuracy for {-1,+1} targets."""
     return (y_true == y_pred).float().mean().item()
 
 def precision(y_true, y_pred):
+    """Positive predictive value for {-1,+1} labels."""
     tp = ((y_pred == 1) & (y_true == 1)).sum().item()
     fp = ((y_pred == 1) & (y_true == -1)).sum().item()
     return tp / (tp + fp + 1e-9)
 
 def recall(y_true, y_pred):
+    """True positive rate for {-1,+1} labels."""
     tp = ((y_pred == 1) & (y_true == 1)).sum().item()
     fn = ((y_pred == -1) & (y_true == 1)).sum().item()
     return tp / (tp + fn + 1e-9)
 
 def f1_score(y_true, y_pred):
+    """Harmonic mean of precision and recall."""
     p = precision(y_true, y_pred)
     r = recall(y_true, y_pred)
     return 2 * p * r / (p + r + 1e-9)
 
 def roc_auc_score(y_true, scores):
+    """Manual ROC-AUC for {-1,+1} labels and real-valued scores."""
     idx = torch.argsort(scores, descending=True)
     y = y_true[idx]
 
@@ -169,6 +178,7 @@ def roc_auc_score(y_true, scores):
     return auc
 
 def compute_metrics(scores, y_true):
+    """Return basic classification metrics from scores and true labels."""
     y_pred = binary_predictions(scores)
     return {
         "accuracy": accuracy(y_true, y_pred),
@@ -182,6 +192,7 @@ def compute_metrics(scores, y_true):
 # Quantum utilities
 # ============================================================
 def expectation_z(state, qubit, n):
+    """Compute ⟨Z⟩ on the specified qubit for a ket state."""
     op = None
     for q in range(n):
         mat = Z if q == qubit else I2
@@ -243,6 +254,7 @@ def state_encoding(x, n, encoding=EncodingType.ANGLE):
 # Deep Variational QNN, no errors
 # ============================================================
 def deep_vqc_forward(x, theta, depth=3, encoding=EncodingType.ANGLE, n=None):
+    """Forward pass of the noiseless deep VQC, returning ⟨Z0⟩."""
     # Calculate number of qubits based on encoding type
     if n is None:
         n = len(x) if encoding == EncodingType.ANGLE else int(math.log2(len(x)))
@@ -268,6 +280,7 @@ def deep_vqc_forward(x, theta, depth=3, encoding=EncodingType.ANGLE, n=None):
 
 # Helper function to build layer of RX/Y/Z on selected qubits
 def param_gate_layer(gate: str, x, specify_qubits: tuple[int] | None = None):
+    """Construct a list of single-qubit parameterized gates over given qubits."""
     op_list = []
     if specify_qubits == None:
         # Apply gate to all qubits
@@ -283,12 +296,13 @@ def param_gate_layer(gate: str, x, specify_qubits: tuple[int] | None = None):
 """
 Noisy-VQC forward pass (one layer), with T1/T2 noise model.
 """
-def noisy_qnn_forward(x, theta, T1=100, T2=200,
-    gate_durations={ # needed for noise model
-        "CNOT": 1,
-        "RY"  :  1, 
-    },
-    encoding=EncodingType.ANGLE):
+def noisy_qnn_forward(x, theta, T1=DEFAULT_T1, T2=DEFAULT_T2,
+    gate_durations=None,  # needed for noise model (all times in μs)
+    encoding=EncodingType.ANGLE,
+    gate_noise_fraction=1.0):
+
+    if gate_durations is None:
+        gate_durations = dict(DEFAULT_GATE_DURATIONS)
     
     # Calculate number of qubits based on encoding type
     n = len(x) if encoding == EncodingType.ANGLE else int(math.log2(len(x)))
@@ -313,7 +327,8 @@ def noisy_qnn_forward(x, theta, T1=100, T2=200,
         num_qubits = n,
         T1 = T1,
         T2 = T2,
-        gate_durations = gate_durations
+        gate_durations = gate_durations,
+        gate_noise_fraction = gate_noise_fraction
     )
     
     Z0 = torch.kron(Z, I2)
@@ -323,22 +338,58 @@ def noisy_qnn_forward(x, theta, T1=100, T2=200,
 # ============================================================
 # Quantum Kernel Model
 # ============================================================
-
-def quantum_feature_map(x, encoding=EncodingType.ANGLE):
+def quantum_feature_map(x, encoding=EncodingType.ANGLE, T1=None, T2=None,
+    gate_durations=None):
+    """Build the feature map circuit/state for kernel or noisy simulation."""
+    if gate_durations is None:
+        gate_durations = dict(DEFAULT_GATE_DURATIONS)
     # Calculate number of qubits based on encoding type
     n = len(x) if encoding == EncodingType.ANGLE else int(math.log2(len(x)))
-    init_state,circ = state_encoding(x,n,encoding)
-    state = apply_circuit_to_ket(init_state,circ,n)
-    state = apply_gate(state, CNOT, [0,1], n)
-    return state
+    init_state, circ = state_encoding(x, n, encoding)
+    
+    # Add CNOT to circuit
+    circ += [("CNOT", [0, 1])]
+    
+    # If noise parameters provided, use noisy simulation
+    if T1 is not None and T2 is not None:
+        density = run_noisy_circuit_density(
+            initial_state=init_state,
+            circuit=circ,
+            num_qubits=n,
+            T1=T1,
+            T2=T2,
+            gate_durations=gate_durations
+        )
+        return density
+    else:
+        # Noiseless case: apply circuit to ket vector
+        state = apply_circuit_to_ket(init_state, circ, n)
+        return state
 
-def quantum_kernel(x1, x2, encoding = EncodingType.ANGLE):
-    ψ1 = quantum_feature_map(x1, encoding)
-    ψ2 = quantum_feature_map(x2, encoding)
-    return torch.abs(torch.dot(ψ1.conj(), ψ2))**2
+def quantum_kernel(x1, x2, encoding=EncodingType.ANGLE, T1=None, T2=None,
+    gate_durations=None):
+    """Compute kernel value between two inputs via feature map (ket or density)."""
+    if gate_durations is None:
+        gate_durations = dict(DEFAULT_GATE_DURATIONS)
+    ψ1 = quantum_feature_map(x1, encoding, T1, T2, gate_durations)
+    ψ2 = quantum_feature_map(x2, encoding, T1, T2, gate_durations)
+    
+    # Handle both ket vectors and density matrices
+    if isinstance(ψ1, torch.Tensor) and ψ1.dim() == 1:
+        # Noiseless: ket vector inner product
+        return torch.abs(torch.dot(ψ1.conj(), ψ2))**2
+    else:
+        # Noisy: trace distance between density matrices
+        return torch.real(torch.trace(ψ1 @ ψ2))
 
-def kernel_predict(x, X_train, y_train, encoding = EncodingType.ANGLE):
-    vals = torch.tensor([quantum_kernel(x, xi, encoding) for xi in X_train])
+def kernel_predict(x, X_train, y_train, encoding=EncodingType.ANGLE, T1=None, T2=None,
+    gate_durations=None):
+    """Predict sign label via kernel sum against training set."""
+    if gate_durations is None:
+        gate_durations = dict(DEFAULT_GATE_DURATIONS)
+    vals = torch.tensor([
+        quantum_kernel(x, xi, encoding, T1, T2, gate_durations) for xi in X_train
+    ])
     return torch.sign(torch.sum(vals * y_train))
 
 # ============================================================
@@ -366,7 +417,7 @@ def kernel_predict(x, X_train, y_train, encoding = EncodingType.ANGLE):
         Otherwise: None
 
     """
-def train(model_type="deep_vqc", encoding=EncodingType.ANGLE, epochs=25, dataset="real", record_metrics=False, T1=100, T2=200):
+def train(model_type="deep_vqc", encoding=EncodingType.ANGLE, epochs=25, dataset="real", record_metrics=False, T1=DEFAULT_T1, T2=DEFAULT_T2):
     if dataset == "real":
         X_train, X_test, y_train, y_test = make_real_dataset(encoding=encoding)
     elif dataset == "moons":
@@ -379,7 +430,7 @@ def train(model_type="deep_vqc", encoding=EncodingType.ANGLE, epochs=25, dataset
 
     if model_type == "kernel":
         scores = torch.tensor([
-            kernel_predict(x, X_train, y_train, encoding) for x in X_test
+            kernel_predict(x, X_train, y_train, encoding, T1, T2) for x in X_test
         ])
         metrics = compute_metrics(scores, y_test)
         print(f"{dataset.upper()} KERNEL TEST METRICS:", metrics)

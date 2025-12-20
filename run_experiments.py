@@ -15,6 +15,7 @@ import argparse
 from datetime import datetime
 from itertools import product
 
+from constants import DEFAULT_T1, DEFAULT_T2
 from qml_training import train, EncodingType
 
 # Configuration options
@@ -107,7 +108,7 @@ def find_matching_csvs(data_dir, dataset, T1, T2, epochs):
     return found_files
 
 
-def plot_from_results(results, dataset, T1=100, T2=200, epochs=25, save=False):
+def plot_from_results(results, dataset, T1=DEFAULT_T1, T2=DEFAULT_T2, epochs=25, save=False):
     """
     Plot comparison from in-memory results.
     
@@ -176,7 +177,7 @@ def save_summary_csv(all_results, filepath):
             ])
 
 
-def run_all_experiments(epochs=25, T1=100, T2=200):
+def run_all_experiments(epochs=25, T1=DEFAULT_T1, T2=DEFAULT_T2):
     """
     Run all training configurations and save results.
     
@@ -268,12 +269,12 @@ def main():
         help='Number of training epochs (default: 25)'
     )
     parser.add_argument(
-        '--T1', type=float, default=100,
-        help='T1 relaxation time in µs for noise model (default: 100)'
+        '--T1', type=float, default=DEFAULT_T1,
+        help=f'T1 relaxation time in µs for noise model (default: {DEFAULT_T1})'
     )
     parser.add_argument(
-        '--T2', type=float, default=200,
-        help='T2 dephasing time in µs for noise model (default: 200)'
+        '--T2', type=float, default=DEFAULT_T2,
+        help=f'T2 dephasing time in µs for noise model (default: {DEFAULT_T2})'
     )
     parser.add_argument(
         '--models', type=str, nargs='+', default=None,

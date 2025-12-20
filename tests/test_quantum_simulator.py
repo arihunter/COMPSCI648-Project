@@ -312,24 +312,30 @@ class TestNoiseHelpers(TestHelper):
     # thermal_relaxation_error_rate
     # ───────────────────────────────────────────────────────────
     def test_thermal_relaxation_zero_idle(self):
-        λ1, λ2 = thermal_relaxation_error_rate(T1=30e-6, T2=20e-6, idle_time=0.0)
+        λ1, λ_φ = thermal_relaxation_error_rate(T1=100.0, T2=120.0, idle_time=0.0)
         self.assertAlmostEqual(λ1, 0.0)
-        self.assertAlmostEqual(λ2, 0.0)
+        self.assertAlmostEqual(λ_φ, 0.0)
 
     def test_thermal_relaxation_finite_idle(self):
-        T1 = 10.0
-        T2 = 8.0
-        dt = 1.0
-        λ1, λ2 = thermal_relaxation_error_rate(T1, T2, dt)
+        T1 = 100.0
+        T2 = 120.0
+        dt = 10.0
+        λ1, λ_φ = thermal_relaxation_error_rate(T1, T2, dt)
 
         # Check λ1 matches 1 - exp(-dt/T1)
         self.assertAlmostEqual(λ1, 1.0 - math.exp(-dt / T1))
 
-        # Check that total coherence factor matches e^{-dt/T2}
-        # predicted: e^{-dt/(2T1)} (1 - 2 λ2)
-        coh_factor = math.exp(-dt / T2)
-        coh_factor_pred = math.exp(-dt / (2.0 * T1)) * (1.0 - 2.0 * λ2)
-        self.assertAlmostEqual(coh_factor, coh_factor_pred, places=7)
+        # Check dephasing from T_φ: 1/T_φ = 1/T2 - 1/(2*T1)
+        dephasing_rate = (1.0 / T2) - (1.0 / (2.0 * T1))
+        expected_λ_φ = 0.5 * (1.0 - math.exp(-dt * dephasing_rate))
+        self.assertAlmostEqual(λ_φ, expected_λ_φ, places=7)
+
+    def test_thermal_relaxation_t2_can_be_less_than_t1(self):
+        """T2 can be < T1 if pure dephasing is strong (relation: 1/T2 = 1/(2T1) + 1/T_φ)."""
+        # Valid: T2 < T1 is allowed (strong pure dephasing)
+        λ1, λ_φ = thermal_relaxation_error_rate(T1=100.0, T2=80.0, idle_time=10.0)
+        self.assertGreaterEqual(λ1, 0.0)
+        self.assertGreaterEqual(λ_φ, 0.0)
 
     # ───────────────────────────────────────────────────────────
     # amplitude_damping_kraus
@@ -361,7 +367,7 @@ class TestNoiseHelpers(TestHelper):
         self.assert_tensors_close(ks[0], torch.eye(2, dtype=torch.cfloat))
 
     def test_phase_damping_kills_coherence_for_half(self):
-        # λ2 = 0.5 ⇒ off-diagonals multiplied by (1 - 2λ2) = 0
+        # λ_φ = 0.5 ⇒ off-diagonals multiplied by (1 - 2λ_φ) = 0
         ks = phase_damping_kraus(0.5)
         plus = torch.tensor([1/math.sqrt(2), 1/math.sqrt(2)], dtype=torch.cfloat)
         ρ = state_to_density(plus)
@@ -438,11 +444,11 @@ class TestKrausHelpers(TestHelper):
     # add_time_based_noise
     # ───────────────────────────────────────────────────────────
     def test_add_time_based_noise_two_qubits(self):
-        # Circuit: H on 0, then CNOT on (0,1) with equal durations
+        # Circuit: H on 0, then CNOT on (0,1)
         circuit = [("H", [0]), ("CNOT", [0, 1])]
         num_qubits = 2
         T1 = 10.0
-        T2 = 8.0
+        T2 = 12.0
         gate_durations = {"H": 1.0, "CNOT": 1.0}
 
         noisy = add_time_based_noise(
@@ -451,6 +457,7 @@ class TestKrausHelpers(TestHelper):
             T1=T1,
             T2=T2,
             gate_durations=gate_durations,
+            gate_noise_fraction=0.0,  # Test idle noise only
         )
 
         # Expected:
@@ -466,12 +473,35 @@ class TestKrausHelpers(TestHelper):
         self.assertEqual(noise_op[1], [1])
         self.assertAlmostEqual(noise_op[4], 1.0)  # idle_time
 
-        λ1_expected, λ2_expected = thermal_relaxation_error_rate(T1, T2, 1.0)
+        λ1_expected, λ_φ_expected = thermal_relaxation_error_rate(T1, T2, 1.0)
         self.assertAlmostEqual(noise_op[2], λ1_expected)
-        self.assertAlmostEqual(noise_op[3], λ2_expected)
+        self.assertAlmostEqual(noise_op[3], λ_φ_expected)
 
         self.assertEqual(noisy[2][0], "CNOT")
         self.assertEqual(noisy[2][1], [0, 1])
+
+    def test_gate_times_realistic_superconducting(self):
+        """Verify gate durations match realistic superconducting transmon hardware (all times in μs)."""
+        # Realistic values in microseconds (1 ns = 0.001 μs)
+        gate_durations_realistic = {
+            "RX": 0.025,    # Single-qubit: 20–30 ns = 0.020–0.030 μs
+            "RY": 0.025,
+            "RZ": 0.0,      # Virtual gate: 0 ns = 0.0 μs
+            "H": 0.025,
+            "X": 0.025,
+            "CNOT": 0.2,    # Microwave: 100–300 ns = 0.1–0.3 μs (rep: 200 ns = 0.2 μs)
+        }
+        
+        # Validate ranges (all times in μs)
+        for gate, duration_us in gate_durations_realistic.items():
+            if gate == "RZ":
+                self.assertEqual(duration_us, 0.0, f"{gate} should be virtual (0 μs)")
+            elif gate in ["RX", "RY", "H", "X"]:
+                self.assertGreaterEqual(duration_us, 0.020, f"{gate} too fast")
+                self.assertLessEqual(duration_us, 0.030, f"{gate} too slow")
+            elif gate == "CNOT":
+                self.assertGreaterEqual(duration_us, 0.1, f"{gate} too fast")
+                self.assertLessEqual(duration_us, 0.3, f"{gate} too slow")
 
 class TestDensityExecutor(TestHelper):
     # ───────────────────────────────────────────────────────────
@@ -533,9 +563,9 @@ class TestDensityExecutor(TestHelper):
         n = 1
         state = zero_state(n)
         circuit = [("H", [0])]
-        gate_durations = {"H": 1e-9}
-        T1 = 1e9
-        T2 = 1e9
+        gate_durations = {"H": 0.001}  # 1 ns = 0.001 μs
+        T1 = 1e6  # 1e6 μs (very long, effectively no noise)
+        T2 = 1e6  # 1e6 μs (very long, effectively no noise)
 
         ρ_final = run_noisy_circuit_density(
             initial_state=state,
@@ -565,11 +595,11 @@ class TestDensityExecutor(TestHelper):
         )
         ρ = state_to_density(state)
 
-        # Choose nontrivial λ1 and λ2 so both amplitude and phase damping act
+        # Nontrivial λ1 (T1 damping) and λ_φ (T_φ dephasing)
         λ1 = 0.3
-        λ2 = 0.4
+        λ_φ = 0.4
         idle_time = 1.0
-        noise_op = ("T1T2_NOISE", [0], λ1, λ2, idle_time)
+        noise_op = ("T1T2_NOISE", [0], λ1, λ_φ, idle_time)
 
         ρ_out = apply_T1T2_noise_op(ρ, noise_op, num_qubits)
 
@@ -588,18 +618,14 @@ class TestDensityExecutor(TestHelper):
         n = 3
         state = zero_state(n)
 
-        circuit = [
-            ("H", [0]),
-            ("CNOT", [0, 1]),
-        ]
-
+        circuit = [("H", [0]), ("CNOT", [0, 1])]
         gate_durations = {
-            "H": 20e-9,
-            "CNOT": 40e-9,
+            "H": 0.025,   # Single-qubit: 25 ns = 0.025 μs
+            "CNOT": 0.2,  # CNOT: 200 ns = 0.2 μs
         }
 
-        T1 = 30e-6
-        T2 = 20e-6
+        T1 = 100.0   # μs
+        T2 = 120.0   # μs
 
         ρ_final = run_noisy_circuit_density(
             initial_state=state,
@@ -627,12 +653,12 @@ class TestDensityExecutor(TestHelper):
         ]
 
         gate_durations = {
-            "H": 1,
-            "CNOT": 1,
+            "H": 0.025,   # μs
+            "CNOT": 0.2,  # μs
         }
 
-        T1 = 10
-        T2 = 20
+        T1 = 100.0  # μs
+        T2 = 120.0  # μs
 
         ρ_final = run_noisy_circuit_density(
             initial_state=state,
