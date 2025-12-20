@@ -1,3 +1,4 @@
+from PIL.Image import new
 from locale import str
 import torch
 import math
@@ -18,7 +19,10 @@ def random_state(num_qubits: int):
     return state / torch.linalg.norm(state)
 
 def custom_state(amplitudes):
-    state = torch.tensor(amplitudes, dtype=torch.cfloat)
+    if isinstance(amplitudes, torch.Tensor):
+        state = amplitudes.to(dtype=torch.cfloat).clone().detach()
+    else:
+        state = torch.tensor(amplitudes, dtype=torch.cfloat)
     return state / torch.linalg.norm(state)
 
 # ───────────────────────────────────────────────────────────────
@@ -152,6 +156,32 @@ def apply_gate(state: torch.Tensor, gate: torch.Tensor, targets: list, num_qubit
     # reshape back to a vector of length 2^n
     return result.reshape(-1)
 
+
+"""Apply circuit list (in the style of circuits fed to "run_noisy_circuit_density") to a state, but stay in ket/vector notation
+
+Example circuit:
+    circuit = [
+        ("H",   [0]),
+        ("CNOT",[0,1]),
+        (RY,   [2], math.pi/4),  # parametric gate
+    ]
+    
+EX: 
+state = zero_state(3)
+new_state = apply_circuit_to_ket(state, circuit, 3)
+"""
+def apply_circuit_to_ket(state: torch.Tensor, circuit: List[Tuple[str, List[int]]], num_qubits: int):
+    new_state = state.clone()
+    for op in circuit:
+        name = op[0]
+        qubits = op[1]
+        if name in PARAMETRIC_GATES:
+            param = op[2]
+            gate = PARAMETRIC_GATES[name](param)
+        else:
+            gate = GATE_LIBRARY[name]
+        new_state = apply_gate(new_state, gate, qubits, num_qubits)
+    return new_state
 # ───────────────────────────────────────────────────────────────
 # Measurement
 # ───────────────────────────────────────────────────────────────

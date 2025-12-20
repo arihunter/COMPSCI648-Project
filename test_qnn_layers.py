@@ -103,6 +103,25 @@ class TestParamGateLayer(TestHelper):
         result = param_gate_layer("RY", x, qubits)
         
         self.assertEqual(len(result), 0)
+
+    def test_default_applies_all_qubits(self):
+        """Default specify_qubits=None applies gate to every qubit in x."""
+        x = torch.tensor([0.1, 0.2, 0.3])
+
+        result = param_gate_layer("RX", x)
+
+        self.assertEqual(len(result), 3)
+        self.assertEqual([entry[1][0] for entry in result], [0, 1, 2])
+        self.assertAlmostEqual(result[2][2].item(), 0.3, places=5)
+
+    def test_default_matches_explicit_all(self):
+        """specify_qubits=None should match explicitly listing all qubits."""
+        x = torch.tensor([0.7, 0.8])
+
+        default_layer = param_gate_layer("RZ", x)
+        explicit_layer = param_gate_layer("RZ", x, (0, 1))
+
+        self.assertEqual(default_layer, explicit_layer)
     
     def test_gate_layer_in_circuit(self):
         """Test that param_gate_layer output works in a circuit"""

@@ -115,3 +115,7 @@ dmypy.json
 
 # macOS
 .DS_Store
+*.code-workspace
+
+data/*
+plots/*
