@@ -7,19 +7,23 @@ def binary_predictions(scores):
     return torch.where(scores >= 0, 1.0, -1.0)
 
 def accuracy(y_true, y_pred):
+    """Binary accuracy for {-1,+1} labels."""
     return (y_true == y_pred).float().mean().item()
 
 def precision(y_true, y_pred):
+    """Positive predictive value for {-1,+1} labels."""
     tp = ((y_pred == 1) & (y_true == 1)).sum().item()
     fp = ((y_pred == 1) & (y_true == -1)).sum().item()
     return tp / (tp + fp + 1e-9)
 
 def recall(y_true, y_pred):
+    """True positive rate for {-1,+1} labels."""
     tp = ((y_pred == 1) & (y_true == 1)).sum().item()
     fn = ((y_pred == -1) & (y_true == 1)).sum().item()
     return tp / (tp + fn + 1e-9)
 
 def f1_score(y_true, y_pred):
+    """Harmonic mean of precision and recall."""
     p = precision(y_true, y_pred)
     r = recall(y_true, y_pred)
     return 2 * p * r / (p + r + 1e-9)
