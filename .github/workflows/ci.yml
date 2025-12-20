@@ -1,32 +1,103 @@
 name: CI
 
-on: [push]
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
 
 jobs:
-  test:
+  test-quantum-simulator:
     runs-on: ubuntu-latest
-
     steps:
     - uses: actions/checkout@v4
-
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.x'
-
     - name: Install dependencies
-      run: |
-        pip install torch matplotlib scikit-learn
+      run: pip install torch matplotlib scikit-learn
+    - name: Run quantum simulator tests
+      run: python -m unittest discover -s tests -p "test_quantum_simulator.py" -v
 
-    - name: Run tests
-      run: |
-        python -m unittest test_quantum_simulator.py && python -m unittest test_qnn_layers.py
-      
-    - name: Run qnn_training
-      run: |
-        python qml_training.py
-         
-    - name: Run qnn_training-parallel
-      run: |
-        python qml_training_parallel.py
+  test-qnn-layers:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.x'
+    - name: Install dependencies
+      run: pip install torch matplotlib scikit-learn
+    - name: Run QNN layers tests
+      run: python -m unittest discover -s tests -p "test_qnn_layers.py" -v
+
+  test-qml-run:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.x'
+    - name: Install dependencies
+      run: pip install torch matplotlib scikit-learn
+    - name: Run QML run tests
+      run: python -m unittest discover -s tests -p "test_qml_run.py" -v
+
+  test-qml-parallel-run:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.x'
+    - name: Install dependencies
+      run: pip install torch matplotlib scikit-learn
+    - name: Run QML parallel run tests
+      run: python -m unittest discover -s tests -p "test_qml_parallel_run.py" -v
+
+  test-run-experiments:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.x'
+    - name: Install dependencies
+      run: pip install torch matplotlib scikit-learn
+    - name: Run experiments tests
+      run: python -m unittest discover -s tests -p "test_run_experiments.py" -v
+
+  test-state-encoding:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.x'
+    - name: Install dependencies
+      run: pip install torch matplotlib scikit-learn
+    - name: Run state encoding tests
+      run: python -m unittest discover -s tests -p "test_state_encoding.py" -v
+
+  run-training:
+    runs-on: ubuntu-latest
+    needs: [test-quantum-simulator, test-qnn-layers, test-qml-run, test-qml-parallel-run, test-run-experiments, test-state-encoding]
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.x'
+    - name: Install dependencies
+      run: pip install torch matplotlib scikit-learn
+    - name: Run qml_training
+      run: python qml_training.py
+    - name: Run qml_training_parallel
+      run: python qml_training_parallel.py
+
 
