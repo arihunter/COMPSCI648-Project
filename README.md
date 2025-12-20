@@ -2,6 +2,16 @@
 
 Quantum machine learning for binary classification using variational quantum circuits, built with PyTorch.
 
+## Reproducibility: Data Generation Command
+
+The following command was used to generate the data in this project:
+
+```bash
+uv run python run_experiments.py --noise-sweep --epochs 25 --T1-values 1 10 50 100 2000 100000 --plot
+```
+
+This evaluates all models for varying T1/T2 values, and records results, as well as by-epoch performance.
+
 ## Project Structure
 
 ```
@@ -34,6 +44,7 @@ T1/T2 thermal relaxation applied after each gate:
  - Units: all times in microseconds; typical: H≈0.025 μs, CNOT≈0.2 μs
  - Relaxation model based on superconducting transmon qubit
 
+
 ## Models
 
 **Deep VQC**: Multi-layer variational circuit with RY, RZ, CNOT layers.
@@ -42,7 +53,42 @@ T1/T2 thermal relaxation applied after each gate:
 
 **Quantum Kernel**: Feature-map based classifier using quantum state overlap. No gradient-based training—predicts labels via kernel sum against training set. Useful for comparing encoding methods under varying noise.
 
-## Usage
+## Datasets
+
+- **real**: Breast cancer (UCI), PCA to 2-4 features
+- **moons**: Synthetic two-moons, 2D
+
+## Demo Notebook
+
+`demos/circuit_visualization.ipynb` shows encoding comparisons, kernel matrices, and noise effects on fidelity.
+
+
+## Install
+
+```bash
+pip install -e .
+```
+
+Requires Python 3.11, PyTorch ≥2.0, NumPy, Matplotlib, scikit-learn.
+
+## Environment Setup
+
+Use `uv` to create a local 3.11 environment (reads `pyproject.toml`):
+
+```bash
+uv sync
+source .venv/bin/activate
+```
+
+Or run without activating:
+
+```bash
+uv run python run_experiments.py --help
+```
+
+---
+
+## Usage (Reference Only)
 
 ### Trainable Models (VQC, Noise-Aware QNN)
 
@@ -143,35 +189,3 @@ Artifacts:
 | `--noise-sweep` | off | flag | Run all models with varying T1 values |
 | `--T1-values` | 25 50 100 200 500 | floats | T1 values (μs) for noise sweep |
 | `--T2-ratio` | 2.0 | float | T2/T1 ratio for noise sweep |
-
-## Datasets
-
-- **real**: Breast cancer (UCI), PCA to 2-4 features
-- **moons**: Synthetic two-moons, 2D
-
-## Demo Notebook
-
-`demos/circuit_visualization.ipynb` shows encoding comparisons, kernel matrices, and noise effects on fidelity.
-
-## Install
-
-```bash
-pip install -e .
-```
-
-Requires Python 3.11, PyTorch ≥2.0, NumPy, Matplotlib, scikit-learn.
-
-## Environment Setup
-
-Use `uv` to create a local 3.11 environment (reads `pyproject.toml`):
-
-```bash
-uv sync
-source .venv/bin/activate
-```
-
-Or run without activating:
-
-```bash
-uv run python run_experiments.py --help
-```
